@@ -14,30 +14,19 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 
 # ================== НАСТРОЙКИ ==================
-# В Bothost токен лучше задавать переменной окружения BOT_TOKEN
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-
 DATA_FILE = "reminders.json"
 
-# Таймзона бота
 TZ_NAME = os.environ.get("BOT_TZ", "Europe/Moscow")
 TZ = pytz.timezone(TZ_NAME)
 
-# Сколько дней вперед показывать кнопками для выбора даты
 DATE_PICK_DAYS = int(os.environ.get("DATE_PICK_DAYS", "21"))
 
-# Автоудаление напоминаний через 24 часа ПОСЛЕ события
 AUTO_DELETE_AFTER_HOURS = int(os.environ.get("AUTO_DELETE_AFTER_HOURS", "24"))
-
-# Частота автоочистки (в минутах)
 CLEANUP_INTERVAL_MINUTES = int(os.environ.get("CLEANUP_INTERVAL_MINUTES", "1"))
 
-
-# ================== ПРОВЕРКИ ==================
 if not BOT_TOKEN:
-    raise RuntimeError(
-        "Не задан BOT_TOKEN. Добавь переменную окружения BOT_TOKEN в панели хостинга (Bothost)."
-    )
+    raise RuntimeError("Не задан BOT_TOKEN. Добавь переменную окружения BOT_TOKEN в панели хостинга (Bothost).")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 scheduler = BackgroundScheduler(timezone=TZ)
@@ -125,14 +114,46 @@ def get_chat_reminders(chat_id: int) -> List[Dict[str, Any]]:
 
 
 # ================== МЕНЮ ==================
-def main_menu_kb() -> ReplyKeyboardMarkup:
+def kb_main_menu() -> ReplyKeyboardMarkup:
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(KeyboardButton("➕ Добавить напоминание"))
-    kb.row(KeyboardButton("📋 Все напоминания"))
+    kb.row(KeyboardButton("📌 Напоминания"))
+    kb.row(KeyboardButton("📚 Полезная информация"))
+    kb.row(KeyboardButton("ℹ️ О боте"))
     return kb
 
 
-# ================== INLINE КЛАВИАТУРЫ ==================
+def kb_reminders_menu() -> ReplyKeyboardMarkup:
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row(KeyboardButton("➕ Добавить напоминание"))
+    kb.row(KeyboardButton("📋 Все напоминания"))
+    kb.row(KeyboardButton("⬅️ Назад"))
+    return kb
+
+
+def kb_info_menu() -> ReplyKeyboardMarkup:
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row(KeyboardButton("📦 Сроки хранения"))
+    kb.row(KeyboardButton("🕘 Расписание РМ"))
+    kb.row(KeyboardButton("🏖 График отпусков"))
+    kb.row(KeyboardButton("📊 АТО"))
+    kb.row(KeyboardButton("🔗 Ссылки на группы"))
+    kb.row(KeyboardButton("📈 Динамика"))
+    kb.row(KeyboardButton("👥 Ростер"))
+    kb.row(KeyboardButton("📇 Контакт лист"))
+    kb.row(KeyboardButton("📝 Протокол собрания"))
+    kb.row(KeyboardButton("⬅️ Назад"))
+    return kb
+
+
+def kb_protocol_menu() -> ReplyKeyboardMarkup:
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row(KeyboardButton("🧑‍💼 РМ"))
+    kb.row(KeyboardButton("👔 Директор"))
+    kb.row(KeyboardButton("⬅️ Назад"))
+    return kb
+
+
+# ================== INLINE КЛАВИАТУРЫ (напоминания) ==================
 def build_date_picker() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
     today = now_tz().date()
@@ -233,7 +254,6 @@ def reschedule_all_from_store() -> None:
     save_data(data)
 
 
-# ================== АВТООЧИСТКА ==================
 def cleanup_expired() -> None:
     data = load_data()
     reminders = data.get("reminders", [])
@@ -270,7 +290,7 @@ def cleanup_expired() -> None:
         save_data(data)
 
 
-# Стартуем планировщик по сохраненным данным
+# Поднимаем все задачи при старте
 reschedule_all_from_store()
 
 # Запускаем автоочистку
@@ -283,19 +303,49 @@ scheduler.add_job(
 )
 
 
-# ================== ХЭНДЛЕРЫ ==================
+# ================== НАВИГАЦИЯ /start ==================
 @bot.message_handler(commands=["start"])
 def start_cmd(message):
     bot.send_message(
         message.chat.id,
-        "Привет! Я бот-напоминалка.\n"
-        "Добавляй напоминания и я напомню за 24 часа и за 1 час до события 👇",
-        reply_markup=main_menu_kb()
+        "Привет! Выбери раздел 👇",
+        reply_markup=kb_main_menu()
     )
 
 
+# ================== РАЗДЕЛЫ МЕНЮ ==================
+@bot.message_handler(func=lambda m: m.text == "📌 Напоминания")
+def open_reminders_section(message):
+    bot.send_message(message.chat.id, "📌 Напоминания:", reply_markup=kb_reminders_menu())
+
+
+@bot.message_handler(func=lambda m: m.text == "📚 Полезная информация")
+def open_info_section(message):
+    bot.send_message(message.chat.id, "📚 Полезная информация:", reply_markup=kb_info_menu())
+
+
+@bot.message_handler(func=lambda m: m.text == "ℹ️ О боте")
+def about_bot(message):
+    bot.send_message(
+        message.chat.id,
+        "ℹ️ <b>О боте</b>\n\n"
+        "• Раздел «Напоминания» — добавление и список\n"
+        "• Раздел «Полезная информация» — документы/ссылки/материалы\n\n"
+        f"🕒 Таймзона: <b>{TZ_NAME}</b>\n"
+        f"🧹 Автоудаление напоминаний: <b>{AUTO_DELETE_AFTER_HOURS} ч</b> после события",
+        reply_markup=kb_main_menu()
+    )
+
+
+@bot.message_handler(func=lambda m: m.text == "⬅️ Назад")
+def go_back(message):
+    bot.send_message(message.chat.id, "Главное меню 👇", reply_markup=kb_main_menu())
+
+
+# ================== НАПОМИНАНИЯ: кнопки и команды ==================
 @bot.message_handler(commands=["add"])
 def add_cmd(message):
+    # разрешаем /add сразу запускать сценарий
     add_reminder_begin(message)
 
 
@@ -310,7 +360,7 @@ def add_reminder_begin(message):
     chat_id = message.chat.id
 
     states[user_id] = {"step": "title", "chat_id": chat_id}
-    bot.send_message(chat_id, "Ок! Введи <b>название</b> напоминания:", reply_markup=main_menu_kb())
+    bot.send_message(chat_id, "Ок! Введи <b>название</b> напоминания:", reply_markup=kb_reminders_menu())
 
 
 @bot.message_handler(func=lambda m: m.text == "📋 Все напоминания")
@@ -319,16 +369,17 @@ def list_reminders(message):
     items = get_chat_reminders(chat_id)
 
     if not items:
-        bot.send_message(chat_id, "Пока нет напоминаний в этом чате.", reply_markup=main_menu_kb())
+        bot.send_message(chat_id, "Пока нет напоминаний в этом чате.", reply_markup=kb_reminders_menu())
         return
 
     lines = ["📋 <b>Напоминания в этом чате</b>:"]
     for i, r in enumerate(items, 1):
         lines.append(f"{i}. <b>{r['title']}</b> — {format_event_dt(r['event_dt'])}")
-    lines.append(f"\n🧹 Напоминания автоматически удаляются через {AUTO_DELETE_AFTER_HOURS} часа после события.")
-    bot.send_message(chat_id, "\n".join(lines), reply_markup=main_menu_kb())
+    lines.append(f"\n🧹 Автоудаление: через {AUTO_DELETE_AFTER_HOURS} часа после события.")
+    bot.send_message(chat_id, "\n".join(lines), reply_markup=kb_reminders_menu())
 
 
+# ================== СЦЕНАРИЙ ДОБАВЛЕНИЯ: текстовые шаги ==================
 @bot.message_handler(func=lambda m: True, content_types=["text"])
 def text_router(message):
     user_id = message.from_user.id
@@ -346,7 +397,7 @@ def text_router(message):
     if step == "title":
         title = message.text.strip()
         if not title:
-            bot.send_message(chat_id, "Название не может быть пустым. Введи ещё раз:")
+            bot.send_message(chat_id, "Название не может быть пустым. Введи ещё раз:", reply_markup=kb_reminders_menu())
             return
 
         st["title"] = title
@@ -417,12 +468,13 @@ def finalize_reminder(user_id: int, chat_id: int, time_hhmm: str) -> None:
         f"📅 {event_dt.strftime('%d.%m.%Y %H:%M')}\n"
         "Я напомню <b>за 24 часа</b> и <b>за 1 час</b> до события.\n"
         f"🧹 Автоудаление: через <b>{AUTO_DELETE_AFTER_HOURS} часа</b> после события.",
-        reply_markup=main_menu_kb()
+        reply_markup=kb_reminders_menu()
     )
 
     states.pop(user_id, None)
 
 
+# ================== INLINE CALLBACKS (напоминания) ==================
 @bot.callback_query_handler(func=lambda call: True)
 def callbacks(call):
     user_id = call.from_user.id
@@ -438,7 +490,7 @@ def callbacks(call):
             bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
         except Exception:
             pass
-        bot.send_message(chat_id, "Ок, отменил. Возвращаю меню 👇", reply_markup=main_menu_kb())
+        bot.send_message(chat_id, "Ок, отменил. Возвращаю меню 👇", reply_markup=kb_reminders_menu())
         return
 
     if not st or int(st.get("chat_id")) != int(chat_id):
@@ -486,6 +538,43 @@ def callbacks(call):
 
     else:
         bot.answer_callback_query(call.id)
+
+
+# ================== ПОЛЕЗНАЯ ИНФОРМАЦИЯ ==================
+INFO_STUBS = {
+    "📦 Сроки хранения",
+    "🕘 Расписание РМ",
+    "🏖 График отпусков",
+    "📊 АТО",
+    "🔗 Ссылки на группы",
+    "📈 Динамика",
+    "👥 Ростер",
+    "📇 Контакт лист",
+}
+
+@bot.message_handler(func=lambda m: m.text in INFO_STUBS)
+def info_stub(message):
+    bot.send_message(
+        message.chat.id,
+        "Раздел в разработке 🛠\n"
+        "Скоро здесь появится актуальная информация.",
+        reply_markup=kb_info_menu()
+    )
+
+
+@bot.message_handler(func=lambda m: m.text == "📝 Протокол собрания")
+def protocol_menu(message):
+    bot.send_message(message.chat.id, "📝 Протокол собрания — выбери раздел:", reply_markup=kb_protocol_menu())
+
+
+@bot.message_handler(func=lambda m: m.text in ["🧑‍💼 РМ", "👔 Директор"])
+def protocol_stub(message):
+    bot.send_message(
+        message.chat.id,
+        "Раздел протоколов в разработке 🛠\n"
+        "Скоро добавим материалы и шаблоны.",
+        reply_markup=kb_protocol_menu()
+    )
 
 
 if __name__ == "__main__":
