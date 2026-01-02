@@ -13,6 +13,10 @@ from telebot.types import (
 from apscheduler.schedulers.background import BackgroundScheduler
 
 
+# ================== ВЕРСИЯ (для проверки деплоя) ==================
+BOT_VERSION = "menu-v1-2026-01-02-01"
+
+
 # ================== НАСТРОЙКИ ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 DATA_FILE = "reminders.json"
@@ -32,7 +36,6 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 scheduler = BackgroundScheduler(timezone=TZ)
 scheduler.start()
 
-# states[user_id] = {"step": "...", "chat_id": int, "title": str, "date": "YYYY-MM-DD"}
 states: Dict[int, Dict[str, Any]] = {}
 
 
@@ -89,7 +92,6 @@ def get_chat_reminders(chat_id: int) -> List[Dict[str, Any]]:
     data = load_data()
     items = [r for r in data.get("reminders", []) if int(r.get("chat_id", 0)) == int(chat_id)]
 
-    # Нормализуем event_dt в TZ (на случай смешанных поясов)
     changed = False
     for r in items:
         dt = dt_from_iso(r.get("event_dt", ""))
@@ -290,10 +292,8 @@ def cleanup_expired() -> None:
         save_data(data)
 
 
-# Поднимаем все задачи при старте
 reschedule_all_from_store()
 
-# Запускаем автоочистку
 scheduler.add_job(
     cleanup_expired,
     trigger="interval",
@@ -308,9 +308,15 @@ scheduler.add_job(
 def start_cmd(message):
     bot.send_message(
         message.chat.id,
-        "Привет! Выбери раздел 👇",
+        "Привет! Выбери раздел 👇\n"
+        f"<i>Версия: {BOT_VERSION}</i>",
         reply_markup=kb_main_menu()
     )
+
+
+@bot.message_handler(commands=["version"])
+def version_cmd(message):
+    bot.send_message(message.chat.id, f"Версия бота: <b>{BOT_VERSION}</b>")
 
 
 # ================== РАЗДЕЛЫ МЕНЮ ==================
@@ -332,7 +338,8 @@ def about_bot(message):
         "• Раздел «Напоминания» — добавление и список\n"
         "• Раздел «Полезная информация» — документы/ссылки/материалы\n\n"
         f"🕒 Таймзона: <b>{TZ_NAME}</b>\n"
-        f"🧹 Автоудаление напоминаний: <b>{AUTO_DELETE_AFTER_HOURS} ч</b> после события",
+        f"🧹 Автоудаление напоминаний: <b>{AUTO_DELETE_AFTER_HOURS} ч</b> после события\n"
+        f"🔖 Версия: <b>{BOT_VERSION}</b>",
         reply_markup=kb_main_menu()
     )
 
@@ -345,7 +352,6 @@ def go_back(message):
 # ================== НАПОМИНАНИЯ: кнопки и команды ==================
 @bot.message_handler(commands=["add"])
 def add_cmd(message):
-    # разрешаем /add сразу запускать сценарий
     add_reminder_begin(message)
 
 
@@ -467,7 +473,8 @@ def finalize_reminder(user_id: int, chat_id: int, time_hhmm: str) -> None:
         f"<b>{title}</b>\n"
         f"📅 {event_dt.strftime('%d.%m.%Y %H:%M')}\n"
         "Я напомню <b>за 24 часа</b> и <b>за 1 час</b> до события.\n"
-        f"🧹 Автоудаление: через <b>{AUTO_DELETE_AFTER_HOURS} часа</b> после события.",
+        f"🧹 Автоудаление: через <b>{AUTO_DELETE_AFTER_HOURS} часа</b> после события.\n"
+        f"<i>Версия: {BOT_VERSION}</i>",
         reply_markup=kb_reminders_menu()
     )
 
@@ -578,5 +585,5 @@ def protocol_stub(message):
 
 
 if __name__ == "__main__":
-    print(f"🤖 Bot is running. TZ={TZ_NAME}")
+    print(f"🤖 Bot is running. TZ={TZ_NAME} | VERSION={BOT_VERSION}")
     bot.infinity_polling(skip_pending=True)
