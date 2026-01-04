@@ -386,7 +386,8 @@ def list_reminders(message):
 
 
 # ================== СЦЕНАРИЙ ДОБАВЛЕНИЯ: текстовые шаги ==================
-@bot.message_handler(func=lambda m: True, content_types=["text"])
+# ✅ ВАЖНО: этот роутер НЕ должен ловить всё подряд, иначе ломает "Полезную информацию".
+@bot.message_handler(func=lambda m: states.get(m.from_user.id) is not None, content_types=["text"])
 def text_router(message):
     user_id = message.from_user.id
     st = states.get(user_id)
@@ -626,7 +627,6 @@ PROTOCOL_LINKS = {
     "👔 Директор": "https://docs.google.com/spreadsheets/d/1cEMp3_84LuXrffAgqAOQq9kG8k-Ks8ev5k3Xo3QR-qo/edit",
 }
 
-
 INFO_STUBS = {
     "📦 Сроки хранения",
     "🕘 Расписание РМ",
@@ -672,7 +672,6 @@ def info_stub(message):
         )
         return
 
-    # Фолбэк (если что-то не попало)
     bot.send_message(
         message.chat.id,
         "Раздел в разработке 🛠\nСкоро здесь появится актуальная информация.",
