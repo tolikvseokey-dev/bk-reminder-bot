@@ -14,7 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 
 # ================== ВЕРСИЯ (для проверки деплоя) ==================
-BOT_VERSION = "menu-v1-2026-01-02-01"
+BOT_VERSION = "menu-v1-2026-01-04-01"
 
 
 # ================== НАСТРОЙКИ ==================
@@ -386,7 +386,6 @@ def list_reminders(message):
 
 
 # ================== СЦЕНАРИЙ ДОБАВЛЕНИЯ: текстовые шаги ==================
-# ✅ ВАЖНО: этот роутер НЕ должен ловить всё подряд, иначе ломает "Полезную информацию".
 @bot.message_handler(func=lambda m: states.get(m.from_user.id) is not None, content_types=["text"])
 def text_router(message):
     user_id = message.from_user.id
@@ -548,8 +547,17 @@ def callbacks(call):
         bot.answer_callback_query(call.id)
 
 
-# ================== ПОЛЕЗНАЯ ИНФОРМАЦИЯ ==================
-# Наполняем разделы ссылками/текстом. "Сроки хранения" пока не трогаем (заглушка).
+# ================== ПОЛЕЗНАЯ ИНФОРМАЦИЯ (с кнопкой "Открыть") ==================
+def send_open_button(chat_id: int, title: str, url: str, back_to: str = "info"):
+    kb = InlineKeyboardMarkup()
+    kb.row(InlineKeyboardButton("🔗 Открыть", url=url))
+    if back_to == "protocol":
+        bot.send_message(chat_id, f"{title}", reply_markup=kb_protocol_menu())
+        bot.send_message(chat_id, url, reply_markup=kb, disable_web_page_preview=True)
+    else:
+        bot.send_message(chat_id, f"{title}", reply_markup=kb_info_menu())
+        bot.send_message(chat_id, url, reply_markup=kb, disable_web_page_preview=True)
+
 
 INFO_LINKS = {
     "🕘 Расписание РМ": "https://docs.google.com/spreadsheets/d/1ZXCllmYkqmP6y9HRnYm0_2D2f63haeU-vI2gylnL6Pg/edit?usp=drive_link",
@@ -642,7 +650,6 @@ INFO_STUBS = {
 def info_stub(message):
     t = (message.text or "").strip()
 
-    # 📦 Сроки хранения — отдельно позже
     if t == "📦 Сроки хранения":
         bot.send_message(
             message.chat.id,
@@ -651,7 +658,6 @@ def info_stub(message):
         )
         return
 
-    # 🔗 Ссылки на группы — выдаём текстом
     if t == "🔗 Ссылки на группы":
         bot.send_message(
             message.chat.id,
@@ -661,15 +667,9 @@ def info_stub(message):
         )
         return
 
-    # Остальные — выдаём ссылку
     url = INFO_LINKS.get(t)
     if url:
-        bot.send_message(
-            message.chat.id,
-            f"{t}\n{url}",
-            reply_markup=kb_info_menu(),
-            disable_web_page_preview=True
-        )
+        send_open_button(message.chat.id, f"{t}:", url, back_to="info")
         return
 
     bot.send_message(
@@ -690,12 +690,7 @@ def protocol_stub(message):
     url = PROTOCOL_LINKS.get(t)
 
     if url:
-        bot.send_message(
-            message.chat.id,
-            f"📝 Протокол собрания — {t}\n{url}",
-            reply_markup=kb_protocol_menu(),
-            disable_web_page_preview=True
-        )
+        send_open_button(message.chat.id, f"📝 Протокол собрания — {t}:", url, back_to="protocol")
         return
 
     bot.send_message(
