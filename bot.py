@@ -548,6 +548,85 @@ def callbacks(call):
 
 
 # ================== ПОЛЕЗНАЯ ИНФОРМАЦИЯ ==================
+# Наполняем разделы ссылками/текстом. "Сроки хранения" пока не трогаем (заглушка).
+
+INFO_LINKS = {
+    "🕘 Расписание РМ": "https://docs.google.com/spreadsheets/d/1ZXCllmYkqmP6y9HRnYm0_2D2f63haeU-vI2gylnL6Pg/edit?usp=drive_link",
+    "🏖 График отпусков": "https://docs.google.com/spreadsheets/d/12SEymi_QNwSJ8agRBzXc1UZCfNhabtiLX07KxEsmpzQ/edit?usp=drive_link",
+    "📊 АТО": "https://docs.google.com/spreadsheets/d/1IiKxS9Tf6oHUJJDhfozvWdbhC9wOZPzapflYv612Du0/edit",
+    "📈 Динамика": "https://docs.google.com/spreadsheets/d/1HhgNo3mfd8LrdfBPU2sjVatA-fboBf75387Ryd-qVUg/edit?gid=2086138160#gid=2086138160",
+    "👥 Ростер": "https://docs.google.com/spreadsheets/d/1vwPI_SPnjX5wPI6tu4jAFXSWFubjBQEO56kuCMysL_4/edit?usp=drive_link",
+    "📇 Контакт лист": "https://docs.google.com/spreadsheets/d/1P5GbNMQD0A3OWh6GxLAYJDlgC92H95uo/edit?gid=2031453167#gid=2031453167",
+}
+
+GROUPS_TEXT = """Группы
+
+Витрины
+https://t.me/+9hdkceSRFdU4MmZi
+
+Кофе-бар
+https://t.me/+rAM0-VID0Gg0NmUy
+
+Персонал
+https://t.me/+ZcNnavnmJQlkZDAy
+
+
+Цели
+https://t.me/+SkzL_Xit6ypkMmZi
+
+Айти вопросы
+https://t.me/+oMzRrI1DzGlkNDVi
+
+Логистика
+https://t.me/+CsD1pmYTTnQ5NDdi
+
+Технические вопросы 
+https://t.me/+0dm4nBMj3LVlMGYy
+
+Качество ЛБК 
+https://t.me/+9WmWOSrjBxs1N2Uy
+
+Заказы РЦ и ФК 
+
+Нет ссылки 
+
+Выход на стажировку 
+https://t.me/+fa-ESZUYflA0ZThi
+
+Обратная связь ЕДА
+https://t.me/+3mipmXTpud5kZWVi
+
+
+5 pillars
+https://t.me/+f_YYEYz1rfc4NjAy
+
+Курьеры кадры
+https://t.me/+E7w0LSi4ltBlZjJi
+
+Поиск продукции
+https://t.me/+Yw-opolA0tc5ZTY6
+
+Корп академия
+https://t.me/+uhlNZjfkeZE0NGYy
+
+Обучение БК 
+https://t.me/+GU5oGnyjdgc5OTMy
+
+
+Важная информация
+https://t.me/+QB6nQlAno9xhZTQy
+
+
+Пожарная безопасность
+https://t.me/+l2rMTNe2I_VkMjNi
+"""
+
+PROTOCOL_LINKS = {
+    "🧑‍💼 РМ": "https://docs.google.com/spreadsheets/d/1dBZzfanIbtjgp2sFDzU441Wv6ghT-bryQ19wc034Ye4/edit",
+    "👔 Директор": "https://docs.google.com/spreadsheets/d/1cEMp3_84LuXrffAgqAOQq9kG8k-Ks8ev5k3Xo3QR-qo/edit",
+}
+
+
 INFO_STUBS = {
     "📦 Сроки хранения",
     "🕘 Расписание РМ",
@@ -561,10 +640,42 @@ INFO_STUBS = {
 
 @bot.message_handler(func=lambda m: m.text in INFO_STUBS)
 def info_stub(message):
+    t = (message.text or "").strip()
+
+    # 📦 Сроки хранения — отдельно позже
+    if t == "📦 Сроки хранения":
+        bot.send_message(
+            message.chat.id,
+            "📦 <b>Сроки хранения</b>\n\nПока не трогаем — сделаем отдельным блоком 👌",
+            reply_markup=kb_info_menu()
+        )
+        return
+
+    # 🔗 Ссылки на группы — выдаём текстом
+    if t == "🔗 Ссылки на группы":
+        bot.send_message(
+            message.chat.id,
+            GROUPS_TEXT,
+            reply_markup=kb_info_menu(),
+            disable_web_page_preview=True
+        )
+        return
+
+    # Остальные — выдаём ссылку
+    url = INFO_LINKS.get(t)
+    if url:
+        bot.send_message(
+            message.chat.id,
+            f"{t}\n{url}",
+            reply_markup=kb_info_menu(),
+            disable_web_page_preview=True
+        )
+        return
+
+    # Фолбэк (если что-то не попало)
     bot.send_message(
         message.chat.id,
-        "Раздел в разработке 🛠\n"
-        "Скоро здесь появится актуальная информация.",
+        "Раздел в разработке 🛠\nСкоро здесь появится актуальная информация.",
         reply_markup=kb_info_menu()
     )
 
@@ -576,10 +687,21 @@ def protocol_menu(message):
 
 @bot.message_handler(func=lambda m: m.text in ["🧑‍💼 РМ", "👔 Директор"])
 def protocol_stub(message):
+    t = (message.text or "").strip()
+    url = PROTOCOL_LINKS.get(t)
+
+    if url:
+        bot.send_message(
+            message.chat.id,
+            f"📝 Протокол собрания — {t}\n{url}",
+            reply_markup=kb_protocol_menu(),
+            disable_web_page_preview=True
+        )
+        return
+
     bot.send_message(
         message.chat.id,
-        "Раздел протоколов в разработке 🛠\n"
-        "Скоро добавим материалы и шаблоны.",
+        "Раздел протоколов в разработке 🛠\nСкоро добавим материалы и шаблоны.",
         reply_markup=kb_protocol_menu()
     )
 
