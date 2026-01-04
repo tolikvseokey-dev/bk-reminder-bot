@@ -14,7 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 
 # ================== ВЕРСИЯ (для проверки деплоя) ==================
-BOT_VERSION = "menu-v1-2026-01-04-01"
+BOT_VERSION = "menu-inline-useful-2026-01-04-01"
 
 
 # ================== НАСТРОЙКИ ==================
@@ -132,26 +132,105 @@ def kb_reminders_menu() -> ReplyKeyboardMarkup:
     return kb
 
 
-def kb_info_menu() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(KeyboardButton("📦 Сроки хранения"))
-    kb.row(KeyboardButton("🕘 Расписание РМ"))
-    kb.row(KeyboardButton("🏖 График отпусков"))
-    kb.row(KeyboardButton("📊 АТО"))
-    kb.row(KeyboardButton("🔗 Ссылки на группы"))
-    kb.row(KeyboardButton("📈 Динамика"))
-    kb.row(KeyboardButton("👥 Ростер"))
-    kb.row(KeyboardButton("📇 Контакт лист"))
-    kb.row(KeyboardButton("📝 Протокол собрания"))
-    kb.row(KeyboardButton("⬅️ Назад"))
+# ================== INLINE МЕНЮ: ПОЛЕЗНАЯ ИНФОРМАЦИЯ ==================
+USEFUL_LINKS = {
+    "rm_schedule": "https://docs.google.com/spreadsheets/d/1ZXCllmYkqmP6y9HRnYm0_2D2f63haeU-vI2gylnL6Pg/edit?usp=drive_link",
+    "vacations": "https://docs.google.com/spreadsheets/d/12SEymi_QNwSJ8agRBzXc1UZCfNhabtiLX07KxEsmpzQ/edit?usp=drive_link",
+    "ato": "https://docs.google.com/spreadsheets/d/1IiKxS9Tf6oHUJJDhfozvWdbhC9wOZPzapflYv612Du0/edit",
+    "dynamics": "https://docs.google.com/spreadsheets/d/1HhgNo3mfd8LrdfBPU2sjVatA-fboBf75387Ryd-qVUg/edit?gid=2086138160#gid=2086138160",
+    "roster": "https://docs.google.com/spreadsheets/d/1vwPI_SPnjX5wPI6tu4jAFXSWFubjBQEO56kuCMysL_4/edit?usp=drive_link",
+    "contacts": "https://docs.google.com/spreadsheets/d/1P5GbNMQD0A3OWh6GxLAYJDlgC92H95uo/edit?gid=2031453167#gid=2031453167",
+    "protocol_rm": "https://docs.google.com/spreadsheets/d/1dBZzfanIbtjgp2sFDzU441Wv6ghT-bryQ19wc034Ye4/edit",
+    "protocol_directors": "https://docs.google.com/spreadsheets/d/1cEMp3_84LuXrffAgqAOQq9kG8k-Ks8ev5k3Xo3QR-qo/edit",
+}
+
+GROUPS_TEXT = """Группы
+
+Витрины
+https://t.me/+9hdkceSRFdU4MmZi
+
+Кофе-бар
+https://t.me/+rAM0-VID0Gg0NmUy
+
+Персонал
+https://t.me/+ZcNnavnmJQlkZDAy
+
+
+Цели
+https://t.me/+SkzL_Xit6ypkMmZi
+
+Айти вопросы
+https://t.me/+oMzRrI1DzGlkNDVi
+
+Логистика
+https://t.me/+CsD1pmYTTnQ5NDdi
+
+Технические вопросы 
+https://t.me/+0dm4nBMj3LVlMGYy
+
+Качество ЛБК 
+https://t.me/+9WmWOSrjBxs1N2Uy
+
+Заказы РЦ и ФК 
+
+Нет ссылки 
+
+Выход на стажировку 
+https://t.me/+fa-ESZUYflA0ZThi
+
+Обратная связь ЕДА
+https://t.me/+3mipmXTpud5kZWVi
+
+
+5 pillars
+https://t.me/+f_YYEYz1rfc4NjAy
+
+Курьеры кадры
+https://t.me/+E7w0LSi4ltBlZjJi
+
+Поиск продукции
+https://t.me/+Yw-opolA0tc5ZTY6
+
+Корп академия
+https://t.me/+uhlNZjfkeZE0NGYy
+
+Обучение БК 
+https://t.me/+GU5oGnyjdgc5OTMy
+
+
+Важная информация
+https://t.me/+QB6nQlAno9xhZTQy
+
+
+Пожарная безопасность
+https://t.me/+l2rMTNe2I_VkMjNi
+"""
+
+
+def kb_useful_inline() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup()
+
+    # Важно: "Сроки хранения" не url, а callback — потом сюда поставим поиск по базе
+    kb.row(InlineKeyboardButton("🧊 Сроки хранения", callback_data="ui_storage"))
+
+    kb.row(InlineKeyboardButton("🗓 Расписание РМ", url=USEFUL_LINKS["rm_schedule"]))
+    kb.row(InlineKeyboardButton("🌴 График отпусков", url=USEFUL_LINKS["vacations"]))
+    kb.row(InlineKeyboardButton("📊 АТО", url=USEFUL_LINKS["ato"]))
+    kb.row(InlineKeyboardButton("🔗 Ссылки на группы", callback_data="ui_groups"))
+    kb.row(InlineKeyboardButton("📈 Динамика", url=USEFUL_LINKS["dynamics"]))
+    kb.row(InlineKeyboardButton("🧾 Ростер", url=USEFUL_LINKS["roster"]))
+    kb.row(InlineKeyboardButton("☎️ Контакт-лист", url=USEFUL_LINKS["contacts"]))
+
+    kb.row(InlineKeyboardButton("📝 Протокол собрания", callback_data="ui_protocol"))
+    kb.row(InlineKeyboardButton("⬅️ Назад", callback_data="ui_back_main"))
     return kb
 
 
-def kb_protocol_menu() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(KeyboardButton("🧑‍💼 РМ"))
-    kb.row(KeyboardButton("👔 Директор"))
-    kb.row(KeyboardButton("⬅️ Назад"))
+def kb_protocol_inline() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup()
+    kb.row(InlineKeyboardButton("👔 РМ", url=USEFUL_LINKS["protocol_rm"]))
+    kb.row(InlineKeyboardButton("🧑‍💼 Директора", url=USEFUL_LINKS["protocol_directors"]))
+    kb.row(InlineKeyboardButton("⬅️ Назад", callback_data="ui_back_info"))
     return kb
 
 
@@ -327,7 +406,17 @@ def open_reminders_section(message):
 
 @bot.message_handler(func=lambda m: m.text == "📚 Полезная информация")
 def open_info_section(message):
-    bot.send_message(message.chat.id, "📚 Полезная информация:", reply_markup=kb_info_menu())
+    bot.send_message(
+        message.chat.id,
+        "📚 <b>Полезная информация</b>\nВыбери пункт 👇",
+        reply_markup=kb_main_menu()
+    )
+    bot.send_message(
+        message.chat.id,
+        "Меню:",
+        reply_markup=kb_useful_inline(),
+        disable_web_page_preview=True
+    )
 
 
 @bot.message_handler(func=lambda m: m.text == "ℹ️ О боте")
@@ -482,8 +571,9 @@ def finalize_reminder(user_id: int, chat_id: int, time_hhmm: str) -> None:
 
 
 # ================== INLINE CALLBACKS (напоминания) ==================
-@bot.callback_query_handler(func=lambda call: True)
-def callbacks(call):
+# ВАЖНО: НЕ ЛОВИМ ВСЁ ПОДРЯД, ИНАЧЕ СЛОМАЕМ ui_* callbacks полезной информации
+@bot.callback_query_handler(func=lambda call: call.data in {"cancel", "date_manual", "time_manual"} or call.data.startswith("date|") or call.data.startswith("time|"))
+def callbacks_reminders(call):
     user_id = call.from_user.id
     chat_id = call.message.chat.id
     st = states.get(user_id)
@@ -547,157 +637,65 @@ def callbacks(call):
         bot.answer_callback_query(call.id)
 
 
-# ================== ПОЛЕЗНАЯ ИНФОРМАЦИЯ (с кнопкой "Открыть") ==================
-def send_open_button(chat_id: int, title: str, url: str, back_to: str = "info"):
-    kb = InlineKeyboardMarkup()
-    kb.row(InlineKeyboardButton("🔗 Открыть", url=url))
-    if back_to == "protocol":
-        bot.send_message(chat_id, f"{title}", reply_markup=kb_protocol_menu())
-        bot.send_message(chat_id, url, reply_markup=kb, disable_web_page_preview=True)
-    else:
-        bot.send_message(chat_id, f"{title}", reply_markup=kb_info_menu())
-        bot.send_message(chat_id, url, reply_markup=kb, disable_web_page_preview=True)
+# ================== INLINE CALLBACKS (полезная информация) ==================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("ui_"))
+def callbacks_useful(call):
+    chat_id = call.message.chat.id
+    data = call.data
 
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
 
-INFO_LINKS = {
-    "🕘 Расписание РМ": "https://docs.google.com/spreadsheets/d/1ZXCllmYkqmP6y9HRnYm0_2D2f63haeU-vI2gylnL6Pg/edit?usp=drive_link",
-    "🏖 График отпусков": "https://docs.google.com/spreadsheets/d/12SEymi_QNwSJ8agRBzXc1UZCfNhabtiLX07KxEsmpzQ/edit?usp=drive_link",
-    "📊 АТО": "https://docs.google.com/spreadsheets/d/1IiKxS9Tf6oHUJJDhfozvWdbhC9wOZPzapflYv612Du0/edit",
-    "📈 Динамика": "https://docs.google.com/spreadsheets/d/1HhgNo3mfd8LrdfBPU2sjVatA-fboBf75387Ryd-qVUg/edit?gid=2086138160#gid=2086138160",
-    "👥 Ростер": "https://docs.google.com/spreadsheets/d/1vwPI_SPnjX5wPI6tu4jAFXSWFubjBQEO56kuCMysL_4/edit?usp=drive_link",
-    "📇 Контакт лист": "https://docs.google.com/spreadsheets/d/1P5GbNMQD0A3OWh6GxLAYJDlgC92H95uo/edit?gid=2031453167#gid=2031453167",
-}
-
-GROUPS_TEXT = """Группы
-
-Витрины
-https://t.me/+9hdkceSRFdU4MmZi
-
-Кофе-бар
-https://t.me/+rAM0-VID0Gg0NmUy
-
-Персонал
-https://t.me/+ZcNnavnmJQlkZDAy
-
-
-Цели
-https://t.me/+SkzL_Xit6ypkMmZi
-
-Айти вопросы
-https://t.me/+oMzRrI1DzGlkNDVi
-
-Логистика
-https://t.me/+CsD1pmYTTnQ5NDdi
-
-Технические вопросы 
-https://t.me/+0dm4nBMj3LVlMGYy
-
-Качество ЛБК 
-https://t.me/+9WmWOSrjBxs1N2Uy
-
-Заказы РЦ и ФК 
-
-Нет ссылки 
-
-Выход на стажировку 
-https://t.me/+fa-ESZUYflA0ZThi
-
-Обратная связь ЕДА
-https://t.me/+3mipmXTpud5kZWVi
-
-
-5 pillars
-https://t.me/+f_YYEYz1rfc4NjAy
-
-Курьеры кадры
-https://t.me/+E7w0LSi4ltBlZjJi
-
-Поиск продукции
-https://t.me/+Yw-opolA0tc5ZTY6
-
-Корп академия
-https://t.me/+uhlNZjfkeZE0NGYy
-
-Обучение БК 
-https://t.me/+GU5oGnyjdgc5OTMy
-
-
-Важная информация
-https://t.me/+QB6nQlAno9xhZTQy
-
-
-Пожарная безопасность
-https://t.me/+l2rMTNe2I_VkMjNi
-"""
-
-PROTOCOL_LINKS = {
-    "🧑‍💼 РМ": "https://docs.google.com/spreadsheets/d/1dBZzfanIbtjgp2sFDzU441Wv6ghT-bryQ19wc034Ye4/edit",
-    "👔 Директор": "https://docs.google.com/spreadsheets/d/1cEMp3_84LuXrffAgqAOQq9kG8k-Ks8ev5k3Xo3QR-qo/edit",
-}
-
-INFO_STUBS = {
-    "📦 Сроки хранения",
-    "🕘 Расписание РМ",
-    "🏖 График отпусков",
-    "📊 АТО",
-    "🔗 Ссылки на группы",
-    "📈 Динамика",
-    "👥 Ростер",
-    "📇 Контакт лист",
-}
-
-@bot.message_handler(func=lambda m: m.text in INFO_STUBS)
-def info_stub(message):
-    t = (message.text or "").strip()
-
-    if t == "📦 Сроки хранения":
+    if data == "ui_storage":
         bot.send_message(
-            message.chat.id,
-            "📦 <b>Сроки хранения</b>\n\nПока не трогаем — сделаем отдельным блоком 👌",
-            reply_markup=kb_info_menu()
+            chat_id,
+            "🧊 <b>Сроки хранения</b>\n\nПока не трогаем — позже сделаем поиск по базе (это возможно).",
+            reply_markup=kb_main_menu()
         )
         return
 
-    if t == "🔗 Ссылки на группы":
+    if data == "ui_groups":
         bot.send_message(
-            message.chat.id,
+            chat_id,
             GROUPS_TEXT,
-            reply_markup=kb_info_menu(),
+            reply_markup=kb_main_menu(),
             disable_web_page_preview=True
         )
         return
 
-    url = INFO_LINKS.get(t)
-    if url:
-        send_open_button(message.chat.id, f"{t}:", url, back_to="info")
+    if data == "ui_protocol":
+        try:
+            bot.edit_message_text(
+                "📝 <b>Протокол собрания</b>\nВыбери раздел 👇",
+                chat_id,
+                call.message.message_id,
+                reply_markup=kb_protocol_inline()
+            )
+        except Exception:
+            bot.send_message(
+                chat_id,
+                "📝 <b>Протокол собрания</b>\nВыбери раздел 👇",
+                reply_markup=kb_protocol_inline()
+            )
         return
 
-    bot.send_message(
-        message.chat.id,
-        "Раздел в разработке 🛠\nСкоро здесь появится актуальная информация.",
-        reply_markup=kb_info_menu()
-    )
-
-
-@bot.message_handler(func=lambda m: m.text == "📝 Протокол собрания")
-def protocol_menu(message):
-    bot.send_message(message.chat.id, "📝 Протокол собрания — выбери раздел:", reply_markup=kb_protocol_menu())
-
-
-@bot.message_handler(func=lambda m: m.text in ["🧑‍💼 РМ", "👔 Директор"])
-def protocol_stub(message):
-    t = (message.text or "").strip()
-    url = PROTOCOL_LINKS.get(t)
-
-    if url:
-        send_open_button(message.chat.id, f"📝 Протокол собрания — {t}:", url, back_to="protocol")
+    if data == "ui_back_info":
+        try:
+            bot.edit_message_text(
+                "📚 <b>Полезная информация</b>\nВыбери пункт 👇",
+                chat_id,
+                call.message.message_id,
+                reply_markup=kb_useful_inline()
+            )
+        except Exception:
+            bot.send_message(chat_id, "Меню:", reply_markup=kb_useful_inline())
         return
 
-    bot.send_message(
-        message.chat.id,
-        "Раздел протоколов в разработке 🛠\nСкоро добавим материалы и шаблоны.",
-        reply_markup=kb_protocol_menu()
-    )
+    if data == "ui_back_main":
+        bot.send_message(chat_id, "Главное меню 👇", reply_markup=kb_main_menu())
+        return
 
 
 if __name__ == "__main__":
