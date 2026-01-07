@@ -1,3 +1,4 @@
 pyTelegramBotAPI==4.26.0
 APScheduler==3.11.0
 pytz==2025.2
+openpyxl==3.1.5
