@@ -12,7 +12,6 @@ from telebot.types import (
 )
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# openpyxl нужен для чтения xlsx
 try:
     from openpyxl import load_workbook
 except Exception as e:
@@ -20,7 +19,7 @@ except Exception as e:
 
 
 # ================== ВЕРСИЯ ==================
-BOT_VERSION = "inline+storage-search-xlsx-2026-01-07-03"
+BOT_VERSION = "inline+storage-search-xlsx-2026-01-08-01"
 
 
 # ================== НАСТРОЙКИ ==================
@@ -35,8 +34,6 @@ DATE_PICK_DAYS = int(os.environ.get("DATE_PICK_DAYS", "21"))
 AUTO_DELETE_AFTER_HOURS = int(os.environ.get("AUTO_DELETE_AFTER_HOURS", "24"))
 CLEANUP_INTERVAL_MINUTES = int(os.environ.get("CLEANUP_INTERVAL_MINUTES", "1"))
 
-# Имя файла базы. Можно переопределить переменной окружения STORAGE_FILE,
-# иначе бот сам попробует найти подходящий файл по списку кандидатов ниже.
 STORAGE_FILE_ENV = os.environ.get("STORAGE_FILE", "").strip()
 
 if not BOT_TOKEN:
@@ -46,7 +43,6 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 scheduler = BackgroundScheduler(timezone=TZ)
 scheduler.start()
 
-# states[user_id] хранит состояния сценариев: напоминания / поиск сроков хранения
 states: Dict[int, Dict[str, Any]] = {}
 
 
@@ -396,7 +392,6 @@ def _script_dir() -> str:
 
 
 def find_storage_file() -> Optional[str]:
-    # 1) если задано STORAGE_FILE — используем его
     if STORAGE_FILE_ENV:
         p = STORAGE_FILE_ENV
         if not os.path.isabs(p):
@@ -404,7 +399,6 @@ def find_storage_file() -> Optional[str]:
         if os.path.exists(p):
             return p
 
-    # 2) попробуем найти стандартные имена в каталоге проекта
     candidates = [
         "storage.xlsx",
         "Storage.xlsx",
@@ -424,39 +418,36 @@ def _cell_str(v: Any) -> str:
     if v is None:
         return ""
     s = str(v).strip()
-    # иногда в Excel бывает "None" текстом — подчистим
     if s.lower() == "none":
         return ""
     return s
 
 
 def _is_separator_row(name: str, c2: str, c3: str, c4: str) -> bool:
-    # строка-разделитель: заполнен только первый столбец
-    if name and (not c2 and not c3 and not c4):
-        # часто это слова верхним регистром — но даже если нет, всё равно считаем разделителем
-        return True
-    return False
+    return bool(name and (not c2 and not c3 and not c4))
 
 
-StorageRow = Dict[str, str]
-
+StorageRow = Dict[str, Any]
 
 STORAGE_DB: List[StorageRow] = []
 STORAGE_READY: bool = False
 STORAGE_SOURCE_PATH: str = ""
+STORAGE_HEADERS: List[str] = ["Выход (г)", "Срок хранения", "Рекомендуемая температура отдачи"]
 
 
 def load_storage_db() -> Tuple[int, List[str]]:
     """
     Загружает XLSX в память.
-    Возвращает: (кол-во строк, список листов)
+    Формат: A=наименование, B=выход, C=срок хранения, D=температура отдачи
+    Заголовки берем из первой строки (A1:D1) первого листа, если они есть.
     """
-    global STORAGE_DB, STORAGE_READY, STORAGE_SOURCE_PATH
+    global STORAGE_DB, STORAGE_READY, STORAGE_SOURCE_PATH, STORAGE_HEADERS
 
     path = find_storage_file()
     STORAGE_DB = []
     STORAGE_READY = False
     STORAGE_SOURCE_PATH = path or ""
+    STORAGE_HEADERS = ["Выход (г)", "Срок хранения", "Рекомендуемая температура отдачи"]
 
     if not path:
         return 0, []
@@ -464,29 +455,37 @@ def load_storage_db() -> Tuple[int, List[str]]:
     wb = load_workbook(path, data_only=True)
     sheet_names = wb.sheetnames
 
+    # попробуем взять заголовки из первого листа
+    try:
+        ws0 = wb[sheet_names[0]]
+        h1 = _cell_str(ws0.cell(row=1, column=2).value)  # B1
+        h2 = _cell_str(ws0.cell(row=1, column=3).value)  # C1
+        h3 = _cell_str(ws0.cell(row=1, column=4).value)  # D1
+        if h1 and h2 and h3:
+            STORAGE_HEADERS = [h1, h2, h3]
+    except Exception:
+        pass
+
     for sheet_name in sheet_names:
         ws = wb[sheet_name]
 
-        # читаем построчно: ожидаем 4 столбца (A-D)
-        # пропускаем заголовок (1 строка)
         for r in ws.iter_rows(min_row=2, max_col=4, values_only=True):
             name = _cell_str(r[0] if len(r) > 0 else "")
-            c2 = _cell_str(r[1] if len(r) > 1 else "")
-            c3 = _cell_str(r[2] if len(r) > 2 else "")
-            c4 = _cell_str(r[3] if len(r) > 3 else "")
+            out_g = _cell_str(r[1] if len(r) > 1 else "")
+            shelf = _cell_str(r[2] if len(r) > 2 else "")
+            temp = _cell_str(r[3] if len(r) > 3 else "")
 
             if not name:
                 continue
-            if _is_separator_row(name, c2, c3, c4):
-                # разделители пропускаем (можно потом использовать как подкатегорию, если понадобится)
+            if _is_separator_row(name, out_g, shelf, temp):
                 continue
 
             STORAGE_DB.append({
                 "category": sheet_name,
                 "name": name,
-                "col2": c2,
-                "col3": c3,
-                "col4": c4,
+                "out_g": out_g,
+                "shelf": shelf,
+                "temp": temp,
                 "name_lc": name.lower(),
             })
 
@@ -494,7 +493,6 @@ def load_storage_db() -> Tuple[int, List[str]]:
     return len(STORAGE_DB), sheet_names
 
 
-# загрузим при старте
 _count, _sheets = load_storage_db()
 
 
@@ -503,17 +501,12 @@ def storage_search(query: str, limit: int = 12) -> List[StorageRow]:
     if not q:
         return []
 
-    # 1) простое вхождение
     hits = [row for row in STORAGE_DB if q in row["name_lc"]]
 
-    # 2) если нет — попробуем по словам (все слова должны встречаться)
     if not hits:
         parts = [p for p in q.split() if p]
         if parts:
-            hits = [
-                row for row in STORAGE_DB
-                if all(p in row["name_lc"] for p in parts)
-            ]
+            hits = [row for row in STORAGE_DB if all(p in row["name_lc"] for p in parts)]
 
     return hits[:limit]
 
@@ -521,9 +514,12 @@ def storage_search(query: str, limit: int = 12) -> List[StorageRow]:
 def format_storage_row(row: StorageRow) -> str:
     category = row.get("category", "")
     name = row.get("name", "")
-    c2 = row.get("col2", "")
-    c3 = row.get("col3", "")
-    c4 = row.get("col4", "")
+
+    out_g = _cell_str(row.get("out_g", ""))
+    shelf = _cell_str(row.get("shelf", ""))
+    temp = _cell_str(row.get("temp", ""))
+
+    h_out, h_shelf, h_temp = STORAGE_HEADERS
 
     lines = []
     if category:
@@ -531,35 +527,43 @@ def format_storage_row(row: StorageRow) -> str:
     if name:
         lines.append(f"\n<b>{name}</b>")
 
-    # выводим все 4 столбца (name + 3 поля), как ты просил
-    # Чтобы красиво читалось — подпишем поля нейтрально.
-    if c2:
-        lines.append(f"\n<b>Поле 2:</b>\n{c2}")
-    if c3:
-        lines.append(f"\n<b>Поле 3:</b>\n{c3}")
-    if c4:
-        lines.append(f"\n<b>Поле 4:</b>\n{c4}")
+    # Показываем строго 2-4 поля (как ты просил)
+    if out_g:
+        lines.append(f"\n<b>{h_out}:</b>\n{out_g}")
+    else:
+        # если пусто — всё равно выводим подпись, чтобы структура не прыгала
+        lines.append(f"\n<b>{h_out}:</b>\n—")
 
-    # если вдруг какие-то поля пустые — всё равно показываем то, что есть
+    if shelf:
+        lines.append(f"\n<b>{h_shelf}:</b>\n{shelf}")
+    else:
+        lines.append(f"\n<b>{h_shelf}:</b>\n—")
+
+    if temp:
+        lines.append(f"\n<b>{h_temp}:</b>\n{temp}")
+    else:
+        lines.append(f"\n<b>{h_temp}:</b>\n—")
+
     return "\n".join(lines).strip()
 
 
 def kb_storage_after_result() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
     kb.row(InlineKeyboardButton("🔎 Новый поиск", callback_data="storage_newsearch"))
+    kb.row(InlineKeyboardButton("❌ Выйти из поиска", callback_data="storage_exit"))
     kb.row(InlineKeyboardButton("⬅️ В меню", callback_data="nav_main"))
     return kb
 
 
 def kb_storage_pick_list(results: List[StorageRow]) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
-    # показываем до 8 кнопок выбора
     for i, row in enumerate(results[:8]):
         title = row.get("name", "")
         if len(title) > 40:
             title = title[:40] + "…"
         kb.row(InlineKeyboardButton(f"{i+1}) {title}", callback_data=f"storage_pick|{i}"))
     kb.row(InlineKeyboardButton("🔎 Новый поиск", callback_data="storage_newsearch"))
+    kb.row(InlineKeyboardButton("❌ Выйти из поиска", callback_data="storage_exit"))
     kb.row(InlineKeyboardButton("⬅️ В меню", callback_data="nav_main"))
     return kb
 
@@ -567,8 +571,23 @@ def kb_storage_pick_list(results: List[StorageRow]) -> InlineKeyboardMarkup:
 def kb_storage_start() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
     kb.row(InlineKeyboardButton("🔄 Перезагрузить базу", callback_data="storage_reload"))
+    kb.row(InlineKeyboardButton("❌ Выйти из поиска", callback_data="storage_exit"))
     kb.row(InlineKeyboardButton("⬅️ В меню", callback_data="nav_main"))
     return kb
+
+
+# ================== STATE HELPERS ==================
+def clear_user_state(user_id: int) -> None:
+    states.pop(user_id, None)
+
+
+def clear_storage_mode(user_id: int) -> None:
+    st = states.get(user_id)
+    if not st:
+        return
+    if st.get("mode") == "storage_search":
+        # оставляем state пустым
+        clear_user_state(user_id)
 
 
 # ================== УТИЛИТА: УБРАТЬ СТАРУЮ REPLY-КЛАВУ ==================
@@ -579,6 +598,7 @@ def remove_old_keyboard(chat_id: int) -> None:
 # ================== /start /menu ==================
 @bot.message_handler(commands=["start", "menu"])
 def start_cmd(message):
+    clear_user_state(message.from_user.id)  # на /menu выходим из любых режимов
     remove_old_keyboard(message.chat.id)
     bot.send_message(
         message.chat.id,
@@ -594,18 +614,16 @@ def start_cmd(message):
     "➕ Добавить напоминание", "📋 Все напоминания", "⬅️ Назад"
 })
 def legacy_buttons_handler(message):
+    clear_user_state(message.from_user.id)
     remove_old_keyboard(message.chat.id)
-    bot.send_message(
-        message.chat.id,
-        "Перешли на новое меню (inline) 👇",
-        reply_markup=kb_main_inline()
-    )
+    bot.send_message(message.chat.id, "Перешли на новое меню (inline) 👇", reply_markup=kb_main_inline())
 
 
 # ================== NAV CALLBACKS ==================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("nav_"))
 def nav_callbacks(call):
     chat_id = call.message.chat.id
+    user_id = call.from_user.id
     data = call.data
 
     try:
@@ -614,6 +632,7 @@ def nav_callbacks(call):
         pass
 
     if data == "nav_main":
+        clear_user_state(user_id)  # выход из любых режимов при возврате в главное меню
         try:
             bot.edit_message_text("Главное меню 👇", chat_id, call.message.message_id, reply_markup=kb_main_inline())
         except Exception:
@@ -621,6 +640,7 @@ def nav_callbacks(call):
         return
 
     if data == "nav_reminders":
+        clear_user_state(user_id)  # чтобы не залипать в поиске
         try:
             bot.edit_message_text("📌 <b>Напоминания</b> — выбери действие:", chat_id, call.message.message_id, reply_markup=kb_reminders_inline())
         except Exception:
@@ -628,6 +648,7 @@ def nav_callbacks(call):
         return
 
     if data == "nav_useful":
+        clear_user_state(user_id)  # чтобы не залипать в поиске
         try:
             bot.edit_message_text("📚 <b>Полезная информация</b> — выбери пункт:", chat_id, call.message.message_id, reply_markup=kb_useful_inline())
         except Exception:
@@ -635,29 +656,29 @@ def nav_callbacks(call):
         return
 
     if data == "nav_storage":
-        # режим поиска сроков хранения
-        user_id = call.from_user.id
-
         if not STORAGE_READY:
             bot.send_message(
                 chat_id,
                 "🧊 <b>Сроки хранения</b>\n\n"
-                "База не загружена. Проверь, что файл <b>storage.xlsx</b> (или Storage.xlsx) лежит рядом с bot.py.",
+                "База не загружена. Проверь, что файл лежит рядом с bot.py (или задай STORAGE_FILE).",
                 reply_markup=kb_storage_start()
             )
             return
 
+        # включаем режим поиска
         states[user_id] = {"mode": "storage_search", "chat_id": chat_id}
         bot.send_message(
             chat_id,
             "🧊 <b>Сроки хранения — поиск</b>\n\n"
             "Введи название продукта (можно часть слова).\n"
-            "Пример: <i>омлет</i>, <i>песто</i>, <i>суп</i>",
+            "Пример: <i>омлет</i>, <i>песто</i>, <i>суп</i>\n\n"
+            "Чтобы выйти — нажми «❌ Выйти из поиска».",
             reply_markup=kb_storage_start()
         )
         return
 
     if data == "nav_about":
+        clear_user_state(user_id)
         text = (
             "ℹ️ <b>О боте</b>\n\n"
             "• Напоминания: добавление и список\n"
@@ -716,6 +737,7 @@ def reminders_menu_callbacks(call):
         pass
 
     if data == "rem_add":
+        clear_user_state(user_id)
         states[user_id] = {"step": "title", "chat_id": chat_id}
         bot.send_message(chat_id, "Ок! Введи <b>название</b> напоминания:", reply_markup=kb_cancel_inline())
         return
@@ -754,7 +776,7 @@ def callbacks_reminders(call):
         pass
 
     if data == "cancel":
-        states.pop(user_id, None)
+        clear_user_state(user_id)
         bot.send_message(chat_id, "Ок, отменил. Возвращаюсь в меню:", reply_markup=kb_reminders_inline())
         return
 
@@ -769,7 +791,6 @@ def callbacks_reminders(call):
             "Дата выбрана ✅\nТеперь выбери <b>время</b>:",
             chat_id,
             call.message.message_id,
-            show_alert=False,
             reply_markup=build_time_picker()
         )
         return
@@ -814,20 +835,14 @@ def callbacks_storage(call):
     except Exception:
         pass
 
+    if data == "storage_exit":
+        clear_storage_mode(user_id)
+        bot.send_message(chat_id, "Ок, вышел из поиска ✅", reply_markup=kb_main_inline())
+        return
+
     if data == "storage_newsearch":
-        if not STORAGE_READY:
-            bot.send_message(
-                chat_id,
-                "База не загружена. Проверь файл рядом с bot.py.",
-                reply_markup=kb_storage_start()
-            )
-            return
         states[user_id] = {"mode": "storage_search", "chat_id": chat_id}
-        bot.send_message(
-            chat_id,
-            "🔎 Введи название продукта для поиска:",
-            reply_markup=kb_storage_start()
-        )
+        bot.send_message(chat_id, "🔎 Введи название продукта для поиска:", reply_markup=kb_storage_start())
         return
 
     if data == "storage_reload":
@@ -836,8 +851,7 @@ def callbacks_storage(call):
             bot.send_message(
                 chat_id,
                 "❌ Не нашёл файл базы.\n"
-                "Проверь, что <b>storage.xlsx</b> (или Storage.xlsx) лежит рядом с bot.py.\n"
-                "Можно также задать переменную окружения <b>STORAGE_FILE</b> с именем файла.",
+                "Проверь, что xlsx лежит рядом с bot.py или задай STORAGE_FILE.",
                 reply_markup=kb_storage_start()
             )
             return
@@ -863,6 +877,8 @@ def callbacks_storage(call):
 
         row = results[idx]
         bot.send_message(chat_id, format_storage_row(row), reply_markup=kb_storage_after_result())
+        # ✅ после вывода результата — выходим из режима поиска, чтобы не залипало
+        clear_storage_mode(user_id)
         return
 
 
@@ -886,11 +902,7 @@ def text_router(message):
             return
 
         if not STORAGE_READY:
-            bot.send_message(
-                message.chat.id,
-                "База не загружена. Нажми «🔄 Перезагрузить базу» или проверь файл.",
-                reply_markup=kb_storage_start()
-            )
+            bot.send_message(message.chat.id, "База не загружена.", reply_markup=kb_storage_start())
             return
 
         results = storage_search(query, limit=12)
@@ -903,16 +915,15 @@ def text_router(message):
             )
             return
 
-        # сохраним результаты в state, чтобы можно было выбрать кнопкой
         st["storage_results"] = results
 
         if len(results) == 1:
             bot.send_message(message.chat.id, format_storage_row(results[0]), reply_markup=kb_storage_after_result())
+            # ✅ после вывода результата — выходим из режима поиска, чтобы не залипало
+            clear_storage_mode(user_id)
             return
 
-        # несколько — покажем выбор
-        text = f"Нашёл вариантов: <b>{len(results)}</b>\nВыбери нужный:"
-        bot.send_message(message.chat.id, text, reply_markup=kb_storage_pick_list(results))
+        bot.send_message(message.chat.id, f"Нашёл вариантов: <b>{len(results)}</b>\nВыбери нужный:", reply_markup=kb_storage_pick_list(results))
         return
 
     # ====== сценарий напоминаний ======
@@ -999,10 +1010,10 @@ def finalize_reminder(user_id: int, chat_id: int, time_hhmm: str) -> None:
         reply_markup=kb_reminders_inline()
     )
 
-    states.pop(user_id, None)
+    clear_user_state(user_id)
 
 
 if __name__ == "__main__":
     print(f"🤖 Bot is running. TZ={TZ_NAME} | VERSION={BOT_VERSION}")
-    print(f"🧊 Storage ready: {STORAGE_READY} | file: {STORAGE_SOURCE_PATH} | rows: {len(STORAGE_DB)}")
+    print(f"🧊 Storage ready: {STORAGE_READY} | file: {STORAGE_SOURCE_PATH} | rows: {len(STORAGE_DB)} | headers: {STORAGE_HEADERS}")
     bot.infinity_polling(skip_pending=True)
