@@ -14,7 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 
 # ================== ВЕРСИЯ (для проверки деплоя) ==================
-BOT_VERSION = "menu-inline-useful-2026-01-04-01"
+BOT_VERSION = "full-reminders+inline-useful-2026-01-07-01"
 
 
 # ================== НАСТРОЙКИ ==================
@@ -92,6 +92,7 @@ def get_chat_reminders(chat_id: int) -> List[Dict[str, Any]]:
     data = load_data()
     items = [r for r in data.get("reminders", []) if int(r.get("chat_id", 0)) == int(chat_id)]
 
+    # нормализуем tz/iso
     changed = False
     for r in items:
         dt = dt_from_iso(r.get("event_dt", ""))
@@ -115,7 +116,7 @@ def get_chat_reminders(chat_id: int) -> List[Dict[str, Any]]:
     return items
 
 
-# ================== МЕНЮ ==================
+# ================== МЕНЮ (Reply) ==================
 def kb_main_menu() -> ReplyKeyboardMarkup:
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(KeyboardButton("📌 Напоминания"))
@@ -210,9 +211,10 @@ https://t.me/+l2rMTNe2I_VkMjNi
 def kb_useful_inline() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
 
-    # Важно: "Сроки хранения" не url, а callback — потом сюда поставим поиск по базе
+    # "Сроки хранения" — callback (позже сделаем поиск по базе)
     kb.row(InlineKeyboardButton("🧊 Сроки хранения", callback_data="ui_storage"))
 
+    # ссылки — url, открываются сразу
     kb.row(InlineKeyboardButton("🗓 Расписание РМ", url=USEFUL_LINKS["rm_schedule"]))
     kb.row(InlineKeyboardButton("🌴 График отпусков", url=USEFUL_LINKS["vacations"]))
     kb.row(InlineKeyboardButton("📊 АТО", url=USEFUL_LINKS["ato"]))
@@ -406,6 +408,8 @@ def open_reminders_section(message):
 
 @bot.message_handler(func=lambda m: m.text == "📚 Полезная информация")
 def open_info_section(message):
+    # Reply-меню не меняем: пользователь остаётся в основном меню,
+    # а нужный UX даёт inline-меню под сообщением.
     bot.send_message(
         message.chat.id,
         "📚 <b>Полезная информация</b>\nВыбери пункт 👇",
@@ -475,6 +479,7 @@ def list_reminders(message):
 
 
 # ================== СЦЕНАРИЙ ДОБАВЛЕНИЯ: текстовые шаги ==================
+# ВАЖНО: не ловим весь текст подряд, иначе ломаются другие разделы
 @bot.message_handler(func=lambda m: states.get(m.from_user.id) is not None, content_types=["text"])
 def text_router(message):
     user_id = message.from_user.id
@@ -571,13 +576,18 @@ def finalize_reminder(user_id: int, chat_id: int, time_hhmm: str) -> None:
 
 
 # ================== INLINE CALLBACKS (напоминания) ==================
-# ВАЖНО: НЕ ЛОВИМ ВСЁ ПОДРЯД, ИНАЧЕ СЛОМАЕМ ui_* callbacks полезной информации
-@bot.callback_query_handler(func=lambda call: call.data in {"cancel", "date_manual", "time_manual"} or call.data.startswith("date|") or call.data.startswith("time|"))
+# Важно: не ловим всё подряд, чтобы не мешать ui_*
+@bot.callback_query_handler(
+    func=lambda call: (
+        call.data in {"cancel", "date_manual", "time_manual"} or
+        call.data.startswith("date|") or
+        call.data.startswith("time|")
+    )
+)
 def callbacks_reminders(call):
     user_id = call.from_user.id
     chat_id = call.message.chat.id
     st = states.get(user_id)
-
     data = call.data
 
     if data == "cancel":
@@ -651,7 +661,7 @@ def callbacks_useful(call):
     if data == "ui_storage":
         bot.send_message(
             chat_id,
-            "🧊 <b>Сроки хранения</b>\n\nПока не трогаем — позже сделаем поиск по базе (это возможно).",
+            "🧊 <b>Сроки хранения</b>\n\nПока не трогаем — позже сделаем поиск по базе (JSON/таблица).",
             reply_markup=kb_main_menu()
         )
         return
@@ -666,6 +676,7 @@ def callbacks_useful(call):
         return
 
     if data == "ui_protocol":
+        # редактируем текущее inline-сообщение, чтобы не плодить новые
         try:
             bot.edit_message_text(
                 "📝 <b>Протокол собрания</b>\nВыбери раздел 👇",
