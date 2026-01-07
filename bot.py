@@ -6,12 +6,15 @@ from typing import Dict, Any, List, Optional
 
 import pytz
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardRemove
+)
 from apscheduler.schedulers.background import BackgroundScheduler
 
 
 # ================== ВЕРСИЯ ==================
-BOT_VERSION = "no-replykeyboard-full-2026-01-07-01"
+BOT_VERSION = "no-replykeyboard-remove-old-2026-01-07-02"
 
 
 # ================== НАСТРОЙКИ ==================
@@ -33,7 +36,6 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 scheduler = BackgroundScheduler(timezone=TZ)
 scheduler.start()
 
-# состояния по user_id (как и раньше)
 states: Dict[int, Dict[str, Any]] = {}
 
 
@@ -377,13 +379,33 @@ scheduler.add_job(
 )
 
 
+# ================== УТИЛИТА: УБРАТЬ СТАРУЮ REPLY-КЛАВУ ==================
+def remove_old_keyboard(chat_id: int) -> None:
+    # Достаточно ОДИН раз отправить ReplyKeyboardRemove в этот чат,
+    # и старая нижняя клавиатура исчезнет (даже если чат был давно).
+    bot.send_message(chat_id, "Обновил меню ✅", reply_markup=ReplyKeyboardRemove())
+
+
 # ================== /start /menu ==================
 @bot.message_handler(commands=["start", "menu"])
 def start_cmd(message):
+    remove_old_keyboard(message.chat.id)
     bot.send_message(
         message.chat.id,
         "Главное меню 👇\n"
         f"<i>Версия: {BOT_VERSION}</i>",
+        reply_markup=kb_main_inline()
+    )
+
+
+# ================== ПОДХВАТ СТАРЫХ КНОПОК (если их нажмут) ==================
+@bot.message_handler(func=lambda m: (m.text or "").strip() in {"📌 Напоминания", "📚 Полезная информация", "ℹ️ О боте", "➕ Добавить напоминание", "📋 Все напоминания", "⬅️ Назад"})
+def legacy_buttons_handler(message):
+    # на случай, если у пользователя ещё висит старая клавиатура и он тыкнул кнопку
+    remove_old_keyboard(message.chat.id)
+    bot.send_message(
+        message.chat.id,
+        "Перешли на новое меню (inline) 👇",
         reply_markup=kb_main_inline()
     )
 
@@ -401,36 +423,21 @@ def nav_callbacks(call):
 
     if data == "nav_main":
         try:
-            bot.edit_message_text(
-                "Главное меню 👇",
-                chat_id,
-                call.message.message_id,
-                reply_markup=kb_main_inline()
-            )
+            bot.edit_message_text("Главное меню 👇", chat_id, call.message.message_id, reply_markup=kb_main_inline())
         except Exception:
             bot.send_message(chat_id, "Главное меню 👇", reply_markup=kb_main_inline())
         return
 
     if data == "nav_reminders":
         try:
-            bot.edit_message_text(
-                "📌 <b>Напоминания</b> — выбери действие:",
-                chat_id,
-                call.message.message_id,
-                reply_markup=kb_reminders_inline()
-            )
+            bot.edit_message_text("📌 <b>Напоминания</b> — выбери действие:", chat_id, call.message.message_id, reply_markup=kb_reminders_inline())
         except Exception:
             bot.send_message(chat_id, "📌 <b>Напоминания</b> — выбери действие:", reply_markup=kb_reminders_inline())
         return
 
     if data == "nav_useful":
         try:
-            bot.edit_message_text(
-                "📚 <b>Полезная информация</b> — выбери пункт:",
-                chat_id,
-                call.message.message_id,
-                reply_markup=kb_useful_inline()
-            )
+            bot.edit_message_text("📚 <b>Полезная информация</b> — выбери пункт:", chat_id, call.message.message_id, reply_markup=kb_useful_inline())
         except Exception:
             bot.send_message(chat_id, "📚 <b>Полезная информация</b> — выбери пункт:", reply_markup=kb_useful_inline())
         return
