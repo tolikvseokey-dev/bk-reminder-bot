@@ -19,7 +19,7 @@ except Exception as e:
 
 
 # ================== ВЕРСИЯ ==================
-BOT_VERSION = "inline+storage-universal-schema-skip-empty-2026-01-08-02"
+BOT_VERSION = "inline+storage-consistent-fields+aliases-2026-01-08-03"
 
 
 # ================== НАСТРОЙКИ ==================
@@ -424,7 +424,6 @@ def _cell_str(v: Any) -> str:
 
 
 def _norm_header(s: str) -> str:
-    # нормализуем заголовки, чтобы ловить варианты с лишними пробелами
     return " ".join((s or "").strip().split()).lower()
 
 
@@ -434,23 +433,67 @@ STORAGE_DB: List[StorageRow] = []
 STORAGE_READY: bool = False
 STORAGE_SOURCE_PATH: str = ""
 
-# Универсальный порядок вывода (как ты задал)
-STORAGE_TEMPLATE_HEADERS = [
-    "Выход (г)",
-    "Срок хранения",
-    "Рекомендуемая температура отдачи",
-    "Маркировка на витрине",
-    "Упаковка собой",
-]
-STORAGE_TEMPLATE_HEADERS_NORM = [_norm_header(x) for x in STORAGE_TEMPLATE_HEADERS]
-STORAGE_NAME_HEADER_NORM = _norm_header("Наименование")
+# Канон по твоему ТЗ
+H_NAME = "Наименование"
+H_OUT = "Выход (г)"
+H_SHELF = "Срок хранения"
+H_TEMP = "Рекомендуемая температура отдачи"
+H_MARK = "Маркировка на витрине"
+H_PACK = "Упаковка собой"
+
+# Всегда показываем эти 4 (даже если пусто -> —)
+ALWAYS_SHOW = [H_OUT, H_SHELF, H_TEMP, H_PACK]
+# Показываем только если заполнено
+OPTIONAL_SHOW = [H_MARK]
+
+# Алиасы заголовков (чтобы excel мог быть “как получится”)
+HEADER_ALIASES: Dict[str, str] = {
+    # Наименование
+    _norm_header("наименование"): H_NAME,
+    _norm_header("название"): H_NAME,
+    _norm_header("продукт"): H_NAME,
+
+    # Выход (г)
+    _norm_header("выход (г)"): H_OUT,
+    _norm_header("выход, г"): H_OUT,
+    _norm_header("выход г"): H_OUT,
+    _norm_header("выход в граммах"): H_OUT,
+    _norm_header("граммовка"): H_OUT,
+    _norm_header("вес (г)"): H_OUT,
+    _norm_header("вес"): H_OUT,
+
+    # Срок хранения
+    _norm_header("срок хранения"): H_SHELF,
+    _norm_header("срок годности"): H_SHELF,
+    _norm_header("хранение"): H_SHELF,
+
+    # Температура
+    _norm_header("рекомендуемая температура отдачи"): H_TEMP,
+    _norm_header("температура отдачи"): H_TEMP,
+    _norm_header("темп. отдачи"): H_TEMP,
+    _norm_header("температура"): H_TEMP,
+
+    # Маркировка
+    _norm_header("маркировка на витрине"): H_MARK,
+    _norm_header("маркировка"): H_MARK,
+    _norm_header("витрина"): H_MARK,
+
+    # Упаковка
+    _norm_header("упаковка собой"): H_PACK,
+    _norm_header("упаковка"): H_PACK,
+    _norm_header("с собой"): H_PACK,
+}
+
+
+def _canonize_header(raw: str) -> Optional[str]:
+    n = _norm_header(raw)
+    return HEADER_ALIASES.get(n)
 
 
 def load_storage_db() -> Tuple[int, List[str]]:
     """
     Загружает XLSX в память.
-    Ищем колонки по заголовкам в 1 строке (A1..Z1).
-    Вывод формируем по шаблону, пустые поля НЕ показываем.
+    Колонки ищем по заголовкам (1 строка). Поддерживаем алиасы.
     """
     global STORAGE_DB, STORAGE_READY, STORAGE_SOURCE_PATH
 
@@ -468,54 +511,57 @@ def load_storage_db() -> Tuple[int, List[str]]:
     for sheet_name in sheet_names:
         ws = wb[sheet_name]
 
-        # читаем заголовки первой строки (до 30 колонок с запасом)
-        header_map: Dict[str, int] = {}  # norm_header -> column_index (1-based)
+        # map: canonical_header -> column_index
+        col_by_header: Dict[str, int] = {}
+
         for col in range(1, 31):
-            h = _cell_str(ws.cell(row=1, column=col).value)
-            if not h:
+            h_raw = _cell_str(ws.cell(row=1, column=col).value)
+            if not h_raw:
                 continue
-            header_map[_norm_header(h)] = col
+            canon = _canonize_header(h_raw)
+            if canon and canon not in col_by_header:
+                col_by_header[canon] = col
 
-        # обязательное: Наименование. Если нет — пробуем считать, что это колонка A
-        name_col = header_map.get(STORAGE_NAME_HEADER_NORM, 1)
+        # Наименование обязателен (если не нашли — берём A)
+        name_col = col_by_header.get(H_NAME, 1)
 
-        # колонки по шаблону (если каких-то заголовков нет на листе — поле всегда будет пустым)
-        field_cols: List[Tuple[str, Optional[int]]] = []
-        for h, hn in zip(STORAGE_TEMPLATE_HEADERS, STORAGE_TEMPLATE_HEADERS_NORM):
-            field_cols.append((h, header_map.get(hn)))
+        # остальные колонки (могут отсутствовать — тогда будет пусто)
+        cols = {
+            H_OUT: col_by_header.get(H_OUT),
+            H_SHELF: col_by_header.get(H_SHELF),
+            H_TEMP: col_by_header.get(H_TEMP),
+            H_MARK: col_by_header.get(H_MARK),
+            H_PACK: col_by_header.get(H_PACK),
+        }
 
-        # читаем строки до конца
-        # max_row берём от листа
         for row in range(2, ws.max_row + 1):
             name = _cell_str(ws.cell(row=row, column=name_col).value)
             if not name:
                 continue
 
-            # пропускаем "разделители" — когда заполнено только Наименование, а остальные пустые
-            any_field = False
             fields: Dict[str, str] = {}
-            for h, col in field_cols:
-                val = _cell_str(ws.cell(row=row, column=col).value) if col else ""
-                if val:
+            any_field = False
+            for h, c in cols.items():
+                v = _cell_str(ws.cell(row=row, column=c).value) if c else ""
+                fields[h] = v
+                if v:
                     any_field = True
-                fields[h] = val
 
+            # разделители внутри листа (только “Наименование” без остальных значений)
             if not any_field:
-                # это заголовок-разделитель внутри листа
                 continue
 
             STORAGE_DB.append({
                 "category": sheet_name,
                 "name": name,
                 "name_lc": name.lower(),
-                "fields": fields,  # ключи = заголовки шаблона
+                "fields": fields,
             })
 
     STORAGE_READY = True
     return len(STORAGE_DB), sheet_names
 
 
-# загружаем при старте
 _count, _sheets = load_storage_db()
 
 
@@ -545,12 +591,16 @@ def format_storage_row(row: StorageRow) -> str:
     if name:
         lines.append(f"\n<b>{name}</b>")
 
-    # выводим по шаблону и пропускаем пустое (как ты просил)
-    for h in STORAGE_TEMPLATE_HEADERS:
+    # 1) всегда показываем 4 поля в одном порядке (если пусто -> —)
+    for h in ALWAYS_SHOW:
         v = _cell_str(fields.get(h, ""))
-        if not v:
-            continue
-        lines.append(f"\n<b>{h}:</b>\n{v}")
+        lines.append(f"\n<b>{h}:</b>\n{v if v else '—'}")
+
+    # 2) маркировка только если заполнена
+    for h in OPTIONAL_SHOW:
+        v = _cell_str(fields.get(h, ""))
+        if v:
+            lines.append(f"\n<b>{h}:</b>\n{v}")
 
     return "\n".join(lines).strip()
 
