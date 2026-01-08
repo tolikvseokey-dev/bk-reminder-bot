@@ -6,10 +6,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 import pytz
 import telebot
-from telebot.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardRemove
-)
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from apscheduler.schedulers.background import BackgroundScheduler
 
 try:
@@ -19,7 +16,7 @@ except Exception as e:
 
 
 # ================== ВЕРСИЯ ==================
-BOT_VERSION = "inline+storage-consistent-fields+aliases-2026-01-08-03"
+BOT_VERSION = "storage-two-fields-marking-layout-2026-01-08-05"
 
 
 # ================== НАСТРОЙКИ ==================
@@ -423,8 +420,8 @@ def _cell_str(v: Any) -> str:
     return s
 
 
-def _norm_header(s: str) -> str:
-    return " ".join((s or "").strip().split()).lower()
+def _norm(s: str) -> str:
+    return " ".join((s or "").strip().lower().split())
 
 
 StorageRow = Dict[str, Any]
@@ -433,68 +430,107 @@ STORAGE_DB: List[StorageRow] = []
 STORAGE_READY: bool = False
 STORAGE_SOURCE_PATH: str = ""
 
-# Канон по твоему ТЗ
+# Канон
 H_NAME = "Наименование"
 H_OUT = "Выход (г)"
 H_SHELF = "Срок хранения"
 H_TEMP = "Рекомендуемая температура отдачи"
 H_MARK = "Маркировка на витрине"
+H_LAYOUT = "Стандарт выкладки"
 H_PACK = "Упаковка собой"
 
-# Всегда показываем эти 4 (даже если пусто -> —)
-ALWAYS_SHOW = [H_OUT, H_SHELF, H_TEMP, H_PACK]
-# Показываем только если заполнено
-OPTIONAL_SHOW = [H_MARK]
+BASE_ALWAYS = [H_OUT, H_SHELF, H_TEMP]  # всегда выводим, пустое -> —
+OPTIONAL_IF_FILLED = [H_MARK, H_LAYOUT]  # выводим только если заполнено
 
-# Алиасы заголовков (чтобы excel мог быть “как получится”)
-HEADER_ALIASES: Dict[str, str] = {
+
+def _canonical_header(raw: str) -> Optional[str]:
+    """
+    Алиасы под твой файл.
+    Важно: H_MARK и H_LAYOUT — разные поля.
+    """
+    t = _norm(raw)
+    if not t:
+        return None
+
     # Наименование
-    _norm_header("наименование"): H_NAME,
-    _norm_header("название"): H_NAME,
-    _norm_header("продукт"): H_NAME,
+    if "наимен" in t or t == "название" or "наименов" in t:
+        return H_NAME
 
-    # Выход (г)
-    _norm_header("выход (г)"): H_OUT,
-    _norm_header("выход, г"): H_OUT,
-    _norm_header("выход г"): H_OUT,
-    _norm_header("выход в граммах"): H_OUT,
-    _norm_header("граммовка"): H_OUT,
-    _norm_header("вес (г)"): H_OUT,
-    _norm_header("вес"): H_OUT,
+    # Выход
+    if "выход" in t:
+        return H_OUT
+    if "грамм" in t or t == "гр" or "в гр" in t:
+        # часто попадается как часть "Выход в гр"
+        # но если тут нет "выход", всё равно трактуем как выход
+        return H_OUT
 
-    # Срок хранения
-    _norm_header("срок хранения"): H_SHELF,
-    _norm_header("срок годности"): H_SHELF,
-    _norm_header("хранение"): H_SHELF,
+    # Срок хранения / сроки реализации
+    if "срок" in t or "реализац" in t:
+        return H_SHELF
 
-    # Температура
-    _norm_header("рекомендуемая температура отдачи"): H_TEMP,
-    _norm_header("температура отдачи"): H_TEMP,
-    _norm_header("темп. отдачи"): H_TEMP,
-    _norm_header("температура"): H_TEMP,
+    # Температура отдачи
+    if "температур" in t and ("отдач" in t or "блюд" in t):
+        return H_TEMP
+    if "температур" in t and "отдач" in t:
+        return H_TEMP
 
     # Маркировка
-    _norm_header("маркировка на витрине"): H_MARK,
-    _norm_header("маркировка"): H_MARK,
-    _norm_header("витрина"): H_MARK,
+    if "маркиров" in t:
+        return H_MARK
+
+    # Стандарт выкладки
+    if "стандарт" in t and "выклад" in t:
+        return H_LAYOUT
 
     # Упаковка
-    _norm_header("упаковка собой"): H_PACK,
-    _norm_header("упаковка"): H_PACK,
-    _norm_header("с собой"): H_PACK,
-}
+    if "упаков" in t or "с собой" in t or "достав" in t:
+        return H_PACK
+
+    return None
 
 
-def _canonize_header(raw: str) -> Optional[str]:
-    n = _norm_header(raw)
-    return HEADER_ALIASES.get(n)
+def _guess_header_row(ws, max_rows: int = 10, max_cols: int = 30) -> int:
+    """
+    Даже если ты сейчас сделал шапку в 1-й строке — это не мешает.
+    Мы просто надежно ищем её в первых max_rows строках.
+    """
+    best_row = 1
+    best_score = -1
+
+    for r in range(1, max_rows + 1):
+        seen = set()
+        score = 0
+        for c in range(1, max_cols + 1):
+            h_raw = _cell_str(ws.cell(r, c).value)
+            canon = _canonical_header(h_raw)
+            if not canon or canon in seen:
+                continue
+            seen.add(canon)
+
+        # скоринг: должны быть имя + минимум 1 базовое поле
+        if H_NAME in seen:
+            score += 5
+        if H_OUT in seen:
+            score += 2
+        if H_SHELF in seen:
+            score += 2
+        if H_TEMP in seen:
+            score += 1
+        if H_MARK in seen:
+            score += 1
+        if H_LAYOUT in seen:
+            score += 1
+        if H_PACK in seen:
+            score += 1
+
+        if score > best_score:
+            best_score = score
+            best_row = r
+
+    return best_row if best_score >= 5 else 1
 
 
 def load_storage_db() -> Tuple[int, List[str]]:
-    """
-    Загружает XLSX в память.
-    Колонки ищем по заголовкам (1 строка). Поддерживаем алиасы.
-    """
     global STORAGE_DB, STORAGE_READY, STORAGE_SOURCE_PATH
 
     path = find_storage_file()
@@ -510,44 +546,47 @@ def load_storage_db() -> Tuple[int, List[str]]:
 
     for sheet_name in sheet_names:
         ws = wb[sheet_name]
+        header_row = _guess_header_row(ws)
 
-        # map: canonical_header -> column_index
+        # canonical_header -> col_index
         col_by_header: Dict[str, int] = {}
 
         for col in range(1, 31):
-            h_raw = _cell_str(ws.cell(row=1, column=col).value)
-            if not h_raw:
-                continue
-            canon = _canonize_header(h_raw)
+            h_raw = _cell_str(ws.cell(row=header_row, column=col).value)
+            canon = _canonical_header(h_raw)
             if canon and canon not in col_by_header:
                 col_by_header[canon] = col
 
-        # Наименование обязателен (если не нашли — берём A)
+        # Наименование обязательно (если не нашли — A)
         name_col = col_by_header.get(H_NAME, 1)
 
-        # остальные колонки (могут отсутствовать — тогда будет пусто)
+        # Есть ли колонка упаковки на этом листе
+        sheet_has_pack = H_PACK in col_by_header
+
         cols = {
             H_OUT: col_by_header.get(H_OUT),
             H_SHELF: col_by_header.get(H_SHELF),
             H_TEMP: col_by_header.get(H_TEMP),
             H_MARK: col_by_header.get(H_MARK),
-            H_PACK: col_by_header.get(H_PACK),
+            H_LAYOUT: col_by_header.get(H_LAYOUT),
+            H_PACK: col_by_header.get(H_PACK),  # может быть None
         }
 
-        for row in range(2, ws.max_row + 1):
+        for row in range(header_row + 1, ws.max_row + 1):
             name = _cell_str(ws.cell(row=row, column=name_col).value)
             if not name:
                 continue
 
             fields: Dict[str, str] = {}
             any_field = False
+
             for h, c in cols.items():
                 v = _cell_str(ws.cell(row=row, column=c).value) if c else ""
                 fields[h] = v
                 if v:
                     any_field = True
 
-            # разделители внутри листа (только “Наименование” без остальных значений)
+            # пропускаем “разделители” (есть имя, но нет данных)
             if not any_field:
                 continue
 
@@ -556,13 +595,11 @@ def load_storage_db() -> Tuple[int, List[str]]:
                 "name": name,
                 "name_lc": name.lower(),
                 "fields": fields,
+                "sheet_has_pack": sheet_has_pack,
             })
 
     STORAGE_READY = True
     return len(STORAGE_DB), sheet_names
-
-
-_count, _sheets = load_storage_db()
 
 
 def storage_search(query: str, limit: int = 12) -> List[StorageRow]:
@@ -584,6 +621,7 @@ def format_storage_row(row: StorageRow) -> str:
     category = row.get("category", "")
     name = row.get("name", "")
     fields: Dict[str, str] = row.get("fields", {}) or {}
+    sheet_has_pack: bool = bool(row.get("sheet_has_pack", False))
 
     lines = []
     if category:
@@ -591,13 +629,18 @@ def format_storage_row(row: StorageRow) -> str:
     if name:
         lines.append(f"\n<b>{name}</b>")
 
-    # 1) всегда показываем 4 поля в одном порядке (если пусто -> —)
-    for h in ALWAYS_SHOW:
+    # базовые — всегда
+    for h in BASE_ALWAYS:
         v = _cell_str(fields.get(h, ""))
         lines.append(f"\n<b>{h}:</b>\n{v if v else '—'}")
 
-    # 2) маркировка только если заполнена
-    for h in OPTIONAL_SHOW:
+    # упаковка — только если колонка есть на листе
+    if sheet_has_pack:
+        v = _cell_str(fields.get(H_PACK, ""))
+        lines.append(f"\n<b>{H_PACK}:</b>\n{v if v else '—'}")
+
+    # доп поля — только если заполнены
+    for h in OPTIONAL_IF_FILLED:
         v = _cell_str(fields.get(h, ""))
         if v:
             lines.append(f"\n<b>{h}:</b>\n{v}")
@@ -619,7 +662,7 @@ def kb_storage_pick_list(results: List[StorageRow]) -> InlineKeyboardMarkup:
         title = row.get("name", "")
         if len(title) > 40:
             title = title[:40] + "…"
-        kb.row(InlineKeyboardButton(f"{i+1}) {title}", callback_data=f"storage_pick|{i}"))
+        kb.row(InlineKeyboardButton(f"{i + 1}) {title}", callback_data=f"storage_pick|{i}"))
     kb.row(InlineKeyboardButton("🔎 Новый поиск", callback_data="storage_newsearch"))
     kb.row(InlineKeyboardButton("❌ Выйти из поиска", callback_data="storage_exit"))
     kb.row(InlineKeyboardButton("⬅️ В меню", callback_data="nav_main"))
@@ -1065,6 +1108,10 @@ def finalize_reminder(user_id: int, chat_id: int, time_hhmm: str) -> None:
     )
 
     clear_user_state(user_id)
+
+
+# ======= загрузка базы при старте (после объявления функций) =======
+_count, _sheets = load_storage_db()
 
 
 if __name__ == "__main__":
