@@ -19,7 +19,7 @@ except Exception as e:
 
 
 # ================== ВЕРСИЯ ==================
-BOT_VERSION = "inline+storage-search-xlsx-2026-01-08-01"
+BOT_VERSION = "inline+storage-universal-schema-skip-empty-2026-01-08-02"
 
 
 # ================== НАСТРОЙКИ ==================
@@ -423,8 +423,9 @@ def _cell_str(v: Any) -> str:
     return s
 
 
-def _is_separator_row(name: str, c2: str, c3: str, c4: str) -> bool:
-    return bool(name and (not c2 and not c3 and not c4))
+def _norm_header(s: str) -> str:
+    # нормализуем заголовки, чтобы ловить варианты с лишними пробелами
+    return " ".join((s or "").strip().split()).lower()
 
 
 StorageRow = Dict[str, Any]
@@ -432,22 +433,31 @@ StorageRow = Dict[str, Any]
 STORAGE_DB: List[StorageRow] = []
 STORAGE_READY: bool = False
 STORAGE_SOURCE_PATH: str = ""
-STORAGE_HEADERS: List[str] = ["Выход (г)", "Срок хранения", "Рекомендуемая температура отдачи"]
+
+# Универсальный порядок вывода (как ты задал)
+STORAGE_TEMPLATE_HEADERS = [
+    "Выход (г)",
+    "Срок хранения",
+    "Рекомендуемая температура отдачи",
+    "Маркировка на витрине",
+    "Упаковка собой",
+]
+STORAGE_TEMPLATE_HEADERS_NORM = [_norm_header(x) for x in STORAGE_TEMPLATE_HEADERS]
+STORAGE_NAME_HEADER_NORM = _norm_header("Наименование")
 
 
 def load_storage_db() -> Tuple[int, List[str]]:
     """
     Загружает XLSX в память.
-    Формат: A=наименование, B=выход, C=срок хранения, D=температура отдачи
-    Заголовки берем из первой строки (A1:D1) первого листа, если они есть.
+    Ищем колонки по заголовкам в 1 строке (A1..Z1).
+    Вывод формируем по шаблону, пустые поля НЕ показываем.
     """
-    global STORAGE_DB, STORAGE_READY, STORAGE_SOURCE_PATH, STORAGE_HEADERS
+    global STORAGE_DB, STORAGE_READY, STORAGE_SOURCE_PATH
 
     path = find_storage_file()
     STORAGE_DB = []
     STORAGE_READY = False
     STORAGE_SOURCE_PATH = path or ""
-    STORAGE_HEADERS = ["Выход (г)", "Срок хранения", "Рекомендуемая температура отдачи"]
 
     if not path:
         return 0, []
@@ -455,44 +465,57 @@ def load_storage_db() -> Tuple[int, List[str]]:
     wb = load_workbook(path, data_only=True)
     sheet_names = wb.sheetnames
 
-    # попробуем взять заголовки из первого листа
-    try:
-        ws0 = wb[sheet_names[0]]
-        h1 = _cell_str(ws0.cell(row=1, column=2).value)  # B1
-        h2 = _cell_str(ws0.cell(row=1, column=3).value)  # C1
-        h3 = _cell_str(ws0.cell(row=1, column=4).value)  # D1
-        if h1 and h2 and h3:
-            STORAGE_HEADERS = [h1, h2, h3]
-    except Exception:
-        pass
-
     for sheet_name in sheet_names:
         ws = wb[sheet_name]
 
-        for r in ws.iter_rows(min_row=2, max_col=4, values_only=True):
-            name = _cell_str(r[0] if len(r) > 0 else "")
-            out_g = _cell_str(r[1] if len(r) > 1 else "")
-            shelf = _cell_str(r[2] if len(r) > 2 else "")
-            temp = _cell_str(r[3] if len(r) > 3 else "")
+        # читаем заголовки первой строки (до 30 колонок с запасом)
+        header_map: Dict[str, int] = {}  # norm_header -> column_index (1-based)
+        for col in range(1, 31):
+            h = _cell_str(ws.cell(row=1, column=col).value)
+            if not h:
+                continue
+            header_map[_norm_header(h)] = col
 
+        # обязательное: Наименование. Если нет — пробуем считать, что это колонка A
+        name_col = header_map.get(STORAGE_NAME_HEADER_NORM, 1)
+
+        # колонки по шаблону (если каких-то заголовков нет на листе — поле всегда будет пустым)
+        field_cols: List[Tuple[str, Optional[int]]] = []
+        for h, hn in zip(STORAGE_TEMPLATE_HEADERS, STORAGE_TEMPLATE_HEADERS_NORM):
+            field_cols.append((h, header_map.get(hn)))
+
+        # читаем строки до конца
+        # max_row берём от листа
+        for row in range(2, ws.max_row + 1):
+            name = _cell_str(ws.cell(row=row, column=name_col).value)
             if not name:
                 continue
-            if _is_separator_row(name, out_g, shelf, temp):
+
+            # пропускаем "разделители" — когда заполнено только Наименование, а остальные пустые
+            any_field = False
+            fields: Dict[str, str] = {}
+            for h, col in field_cols:
+                val = _cell_str(ws.cell(row=row, column=col).value) if col else ""
+                if val:
+                    any_field = True
+                fields[h] = val
+
+            if not any_field:
+                # это заголовок-разделитель внутри листа
                 continue
 
             STORAGE_DB.append({
                 "category": sheet_name,
                 "name": name,
-                "out_g": out_g,
-                "shelf": shelf,
-                "temp": temp,
                 "name_lc": name.lower(),
+                "fields": fields,  # ключи = заголовки шаблона
             })
 
     STORAGE_READY = True
     return len(STORAGE_DB), sheet_names
 
 
+# загружаем при старте
 _count, _sheets = load_storage_db()
 
 
@@ -514,12 +537,7 @@ def storage_search(query: str, limit: int = 12) -> List[StorageRow]:
 def format_storage_row(row: StorageRow) -> str:
     category = row.get("category", "")
     name = row.get("name", "")
-
-    out_g = _cell_str(row.get("out_g", ""))
-    shelf = _cell_str(row.get("shelf", ""))
-    temp = _cell_str(row.get("temp", ""))
-
-    h_out, h_shelf, h_temp = STORAGE_HEADERS
+    fields: Dict[str, str] = row.get("fields", {}) or {}
 
     lines = []
     if category:
@@ -527,22 +545,12 @@ def format_storage_row(row: StorageRow) -> str:
     if name:
         lines.append(f"\n<b>{name}</b>")
 
-    # Показываем строго 2-4 поля (как ты просил)
-    if out_g:
-        lines.append(f"\n<b>{h_out}:</b>\n{out_g}")
-    else:
-        # если пусто — всё равно выводим подпись, чтобы структура не прыгала
-        lines.append(f"\n<b>{h_out}:</b>\n—")
-
-    if shelf:
-        lines.append(f"\n<b>{h_shelf}:</b>\n{shelf}")
-    else:
-        lines.append(f"\n<b>{h_shelf}:</b>\n—")
-
-    if temp:
-        lines.append(f"\n<b>{h_temp}:</b>\n{temp}")
-    else:
-        lines.append(f"\n<b>{h_temp}:</b>\n—")
+    # выводим по шаблону и пропускаем пустое (как ты просил)
+    for h in STORAGE_TEMPLATE_HEADERS:
+        v = _cell_str(fields.get(h, ""))
+        if not v:
+            continue
+        lines.append(f"\n<b>{h}:</b>\n{v}")
 
     return "\n".join(lines).strip()
 
@@ -586,7 +594,6 @@ def clear_storage_mode(user_id: int) -> None:
     if not st:
         return
     if st.get("mode") == "storage_search":
-        # оставляем state пустым
         clear_user_state(user_id)
 
 
@@ -598,7 +605,7 @@ def remove_old_keyboard(chat_id: int) -> None:
 # ================== /start /menu ==================
 @bot.message_handler(commands=["start", "menu"])
 def start_cmd(message):
-    clear_user_state(message.from_user.id)  # на /menu выходим из любых режимов
+    clear_user_state(message.from_user.id)
     remove_old_keyboard(message.chat.id)
     bot.send_message(
         message.chat.id,
@@ -632,7 +639,7 @@ def nav_callbacks(call):
         pass
 
     if data == "nav_main":
-        clear_user_state(user_id)  # выход из любых режимов при возврате в главное меню
+        clear_user_state(user_id)
         try:
             bot.edit_message_text("Главное меню 👇", chat_id, call.message.message_id, reply_markup=kb_main_inline())
         except Exception:
@@ -640,7 +647,7 @@ def nav_callbacks(call):
         return
 
     if data == "nav_reminders":
-        clear_user_state(user_id)  # чтобы не залипать в поиске
+        clear_user_state(user_id)
         try:
             bot.edit_message_text("📌 <b>Напоминания</b> — выбери действие:", chat_id, call.message.message_id, reply_markup=kb_reminders_inline())
         except Exception:
@@ -648,7 +655,7 @@ def nav_callbacks(call):
         return
 
     if data == "nav_useful":
-        clear_user_state(user_id)  # чтобы не залипать в поиске
+        clear_user_state(user_id)
         try:
             bot.edit_message_text("📚 <b>Полезная информация</b> — выбери пункт:", chat_id, call.message.message_id, reply_markup=kb_useful_inline())
         except Exception:
@@ -660,12 +667,11 @@ def nav_callbacks(call):
             bot.send_message(
                 chat_id,
                 "🧊 <b>Сроки хранения</b>\n\n"
-                "База не загружена. Проверь, что файл лежит рядом с bot.py (или задай STORAGE_FILE).",
+                "База не загружена. Проверь файл рядом с bot.py или задай STORAGE_FILE.",
                 reply_markup=kb_storage_start()
             )
             return
 
-        # включаем режим поиска
         states[user_id] = {"mode": "storage_search", "chat_id": chat_id}
         bot.send_message(
             chat_id,
@@ -877,7 +883,6 @@ def callbacks_storage(call):
 
         row = results[idx]
         bot.send_message(chat_id, format_storage_row(row), reply_markup=kb_storage_after_result())
-        # ✅ после вывода результата — выходим из режима поиска, чтобы не залипало
         clear_storage_mode(user_id)
         return
 
@@ -919,7 +924,6 @@ def text_router(message):
 
         if len(results) == 1:
             bot.send_message(message.chat.id, format_storage_row(results[0]), reply_markup=kb_storage_after_result())
-            # ✅ после вывода результата — выходим из режима поиска, чтобы не залипало
             clear_storage_mode(user_id)
             return
 
@@ -1015,5 +1019,5 @@ def finalize_reminder(user_id: int, chat_id: int, time_hhmm: str) -> None:
 
 if __name__ == "__main__":
     print(f"🤖 Bot is running. TZ={TZ_NAME} | VERSION={BOT_VERSION}")
-    print(f"🧊 Storage ready: {STORAGE_READY} | file: {STORAGE_SOURCE_PATH} | rows: {len(STORAGE_DB)} | headers: {STORAGE_HEADERS}")
+    print(f"🧊 Storage ready: {STORAGE_READY} | file: {STORAGE_SOURCE_PATH} | rows: {len(STORAGE_DB)}")
     bot.infinity_polling(skip_pending=True)
