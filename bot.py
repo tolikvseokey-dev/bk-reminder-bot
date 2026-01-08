@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -16,7 +17,7 @@ except Exception as e:
 
 
 # ================== ВЕРСИЯ ==================
-BOT_VERSION = "storage-two-fields-marking-layout-2026-01-08-05"
+BOT_VERSION = "topic-locked-storage-no-exit-no-reload-stop-admin-2026-01-08-07"
 
 
 # ================== НАСТРОЙКИ ==================
@@ -33,6 +34,8 @@ CLEANUP_INTERVAL_MINUTES = int(os.environ.get("CLEANUP_INTERVAL_MINUTES", "1"))
 
 STORAGE_FILE_ENV = os.environ.get("STORAGE_FILE", "").strip()
 
+ADMIN_USERNAME = "AnatoliiOsin"   # только он видит админ-кнопки
+
 if not BOT_TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN. Добавь переменную окружения BOT_TOKEN в панели хостинга (Bothost).")
 
@@ -43,21 +46,69 @@ scheduler.start()
 states: Dict[int, Dict[str, Any]] = {}
 
 
-# ================== ХРАНЕНИЕ НАПОМИНАНИЙ ==================
+# ================== HELPERS (ADMIN / TOPICS) ==================
+def is_admin_user(user) -> bool:
+    try:
+        return (user.username or "").strip() == ADMIN_USERNAME
+    except Exception:
+        return False
+
+
+def chat_is_group(chat) -> bool:
+    try:
+        return chat.type in ("group", "supergroup")
+    except Exception:
+        return False
+
+
+def get_thread_id_from_message(message) -> Optional[int]:
+    try:
+        return getattr(message, "message_thread_id", None)
+    except Exception:
+        return None
+
+
+def get_thread_id_from_call(call) -> Optional[int]:
+    try:
+        return getattr(call.message, "message_thread_id", None)
+    except Exception:
+        return None
+
+
+# ================== ХРАНЕНИЕ (JSON) ==================
 def load_data() -> Dict[str, Any]:
+    """
+    Структура:
+    {
+      "reminders": [ ... ],
+      "chat_settings": {
+          "<chat_id>": {
+              "allowed_thread_id": 123
+          }
+      }
+    }
+    """
     if not os.path.exists(DATA_FILE):
-        return {"reminders": []}
+        return {"reminders": [], "chat_settings": {}}
+
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         try:
             data = json.load(f)
         except json.JSONDecodeError:
-            return {"reminders": []}
+            return {"reminders": [], "chat_settings": {}}
+
     if "reminders" not in data or not isinstance(data["reminders"], list):
         data["reminders"] = []
+    if "chat_settings" not in data or not isinstance(data["chat_settings"], dict):
+        data["chat_settings"] = {}
     return data
 
 
 def save_data(data: Dict[str, Any]) -> None:
+    if "reminders" not in data:
+        data["reminders"] = []
+    if "chat_settings" not in data:
+        data["chat_settings"] = {}
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -119,17 +170,118 @@ def get_chat_reminders(chat_id: int) -> List[Dict[str, Any]]:
     return items
 
 
+def get_allowed_thread_id(chat_id: int) -> Optional[int]:
+    data = load_data()
+    st = (data.get("chat_settings") or {}).get(str(chat_id), {})
+    tid = st.get("allowed_thread_id")
+    try:
+        return int(tid) if tid is not None else None
+    except Exception:
+        return None
+
+
+def set_allowed_thread_id(chat_id: int, thread_id: int) -> None:
+    data = load_data()
+    cs = data.setdefault("chat_settings", {})
+    cs.setdefault(str(chat_id), {})["allowed_thread_id"] = int(thread_id)
+    save_data(data)
+
+
+def clear_allowed_thread_id(chat_id: int) -> None:
+    data = load_data()
+    cs = data.setdefault("chat_settings", {})
+    if str(chat_id) in cs:
+        cs[str(chat_id)].pop("allowed_thread_id", None)
+    save_data(data)
+
+
+def in_allowed_topic_for_message(message) -> bool:
+    """
+    Правило:
+    - если не группа/супергруппа -> True
+    - если allowed_thread_id не задан -> разрешаем только админу (чтобы он мог закрепить тему)
+    - если задан -> сообщение должно быть в этой теме (message_thread_id == allowed)
+    """
+    if not chat_is_group(message.chat):
+        return True
+
+    allowed = get_allowed_thread_id(message.chat.id)
+    if allowed is None:
+        return is_admin_user(message.from_user)
+
+    tid = get_thread_id_from_message(message)
+    return tid == allowed
+
+
+def in_allowed_topic_for_call(call) -> bool:
+    if not chat_is_group(call.message.chat):
+        return True
+
+    allowed = get_allowed_thread_id(call.message.chat.id)
+    if allowed is None:
+        return is_admin_user(call.from_user)
+
+    tid = get_thread_id_from_call(call)
+    return tid == allowed
+
+
+def send_locked(chat_id: int, text: str, reply_markup=None, disable_web_page_preview: bool = False, fallback_thread_id: Optional[int] = None):
+    """
+    Отправка сообщений:
+    - Если чат групповой и тема закреплена -> ВСЕГДА отправляем в закреплённую тему.
+    - Если тема не закреплена -> если передан fallback_thread_id, отправим туда (удобно для шага закрепления),
+      иначе обычным способом.
+    """
+    allowed = get_allowed_thread_id(chat_id)
+    try:
+        if allowed is not None:
+            return bot.send_message(
+                chat_id,
+                text,
+                reply_markup=reply_markup,
+                disable_web_page_preview=disable_web_page_preview,
+                message_thread_id=allowed
+            )
+        if fallback_thread_id is not None:
+            return bot.send_message(
+                chat_id,
+                text,
+                reply_markup=reply_markup,
+                disable_web_page_preview=disable_web_page_preview,
+                message_thread_id=fallback_thread_id
+            )
+        return bot.send_message(
+            chat_id,
+            text,
+            reply_markup=reply_markup,
+            disable_web_page_preview=disable_web_page_preview
+        )
+    except Exception:
+        # если отправка в тему упала — попробуем без темы
+        return bot.send_message(
+            chat_id,
+            text,
+            reply_markup=reply_markup,
+            disable_web_page_preview=disable_web_page_preview
+        )
+
+
 # ================== INLINE МЕНЮ ==================
-def kb_main_inline() -> InlineKeyboardMarkup:
+def kb_main_inline(user=None) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
     kb.row(InlineKeyboardButton("📌 Напоминания", callback_data="nav_reminders"))
     kb.row(InlineKeyboardButton("📚 Полезная информация", callback_data="nav_useful"))
     kb.row(InlineKeyboardButton("🧊 Сроки хранения (поиск)", callback_data="nav_storage"))
     kb.row(InlineKeyboardButton("ℹ️ О боте", callback_data="nav_about"))
+
+    # Админ-блок (только AnatoliiOsin)
+    if user is not None and is_admin_user(user):
+        kb.row(InlineKeyboardButton("📌 Закрепить эту тему", callback_data="admin_pin_topic"))
+        kb.row(InlineKeyboardButton("🛑 Остановить бота", callback_data="admin_stop_bot"))
     return kb
 
 
-def kb_reminders_inline() -> InlineKeyboardMarkup:
+def kb_reminders_inline(user=None) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
     kb.row(InlineKeyboardButton("➕ Добавить напоминание", callback_data="rem_add"))
     kb.row(InlineKeyboardButton("📋 Все напоминания", callback_data="rem_list"))
@@ -295,6 +447,12 @@ def schedule_reminder_jobs(reminder: Dict[str, Any]) -> None:
     if not event_dt:
         return
 
+    thread_id = reminder.get("thread_id")
+    try:
+        thread_id = int(thread_id) if thread_id is not None else None
+    except Exception:
+        thread_id = None
+
     for kind, delta, label in [
         ("24h", timedelta(hours=24), "за 24 часа"),
         ("1h", timedelta(hours=1), "за 1 час"),
@@ -309,12 +467,13 @@ def schedule_reminder_jobs(reminder: Dict[str, Any]) -> None:
                 pass
             continue
 
-        def _send(chat_id=chat_id, title=title, event_dt=event_dt, label=label):
-            bot.send_message(
+        def _send(chat_id=chat_id, title=title, event_dt=event_dt, label=label, thread_id=thread_id):
+            send_locked(
                 chat_id,
                 f"⏰ Напоминание ({label})\n"
                 f"<b>{title}</b>\n"
-                f"📅 Событие: <b>{event_dt.strftime('%d.%m.%Y %H:%M')}</b>"
+                f"📅 Событие: <b>{event_dt.strftime('%d.%m.%Y %H:%M')}</b>",
+                fallback_thread_id=thread_id
             )
 
         scheduler.add_job(
@@ -430,17 +589,17 @@ STORAGE_DB: List[StorageRow] = []
 STORAGE_READY: bool = False
 STORAGE_SOURCE_PATH: str = ""
 
-# Канон
+# Канон (человеческие подписи для вывода)
 H_NAME = "Наименование"
-H_OUT = "Выход (г)"
+H_OUT = "Выход"
 H_SHELF = "Срок хранения"
-H_TEMP = "Рекомендуемая температура отдачи"
+H_TEMP = "Рекомендуемая температура отдачи блюд"
 H_MARK = "Маркировка на витрине"
 H_LAYOUT = "Стандарт выкладки"
-H_PACK = "Упаковка собой"
+H_PACK = "Упаковка с собой/доставка"
 
-BASE_ALWAYS = [H_OUT, H_SHELF, H_TEMP]  # всегда выводим, пустое -> —
-OPTIONAL_IF_FILLED = [H_MARK, H_LAYOUT]  # выводим только если заполнено
+BASE_ALWAYS = [H_OUT, H_SHELF, H_TEMP]          # всегда выводим, пустое -> —
+OPTIONAL_IF_FILLED = [H_MARK, H_LAYOUT]         # выводим только если заполнено
 
 
 def _canonical_header(raw: str) -> Optional[str]:
@@ -452,37 +611,24 @@ def _canonical_header(raw: str) -> Optional[str]:
     if not t:
         return None
 
-    # Наименование
     if "наимен" in t or t == "название" or "наименов" in t:
         return H_NAME
 
-    # Выход
     if "выход" in t:
         return H_OUT
-    if "грамм" in t or t == "гр" or "в гр" in t:
-        # часто попадается как часть "Выход в гр"
-        # но если тут нет "выход", всё равно трактуем как выход
-        return H_OUT
 
-    # Срок хранения / сроки реализации
     if "срок" in t or "реализац" in t:
         return H_SHELF
 
-    # Температура отдачи
     if "температур" in t and ("отдач" in t or "блюд" in t):
         return H_TEMP
-    if "температур" in t and "отдач" in t:
-        return H_TEMP
 
-    # Маркировка
     if "маркиров" in t:
         return H_MARK
 
-    # Стандарт выкладки
     if "стандарт" in t and "выклад" in t:
         return H_LAYOUT
 
-    # Упаковка
     if "упаков" in t or "с собой" in t or "достав" in t:
         return H_PACK
 
@@ -490,10 +636,6 @@ def _canonical_header(raw: str) -> Optional[str]:
 
 
 def _guess_header_row(ws, max_rows: int = 10, max_cols: int = 30) -> int:
-    """
-    Даже если ты сейчас сделал шапку в 1-й строке — это не мешает.
-    Мы просто надежно ищем её в первых max_rows строках.
-    """
     best_row = 1
     best_score = -1
 
@@ -507,7 +649,6 @@ def _guess_header_row(ws, max_rows: int = 10, max_cols: int = 30) -> int:
                 continue
             seen.add(canon)
 
-        # скоринг: должны быть имя + минимум 1 базовое поле
         if H_NAME in seen:
             score += 5
         if H_OUT in seen:
@@ -548,19 +689,14 @@ def load_storage_db() -> Tuple[int, List[str]]:
         ws = wb[sheet_name]
         header_row = _guess_header_row(ws)
 
-        # canonical_header -> col_index
         col_by_header: Dict[str, int] = {}
-
         for col in range(1, 31):
             h_raw = _cell_str(ws.cell(row=header_row, column=col).value)
             canon = _canonical_header(h_raw)
             if canon and canon not in col_by_header:
                 col_by_header[canon] = col
 
-        # Наименование обязательно (если не нашли — A)
         name_col = col_by_header.get(H_NAME, 1)
-
-        # Есть ли колонка упаковки на этом листе
         sheet_has_pack = H_PACK in col_by_header
 
         cols = {
@@ -586,7 +722,6 @@ def load_storage_db() -> Tuple[int, List[str]]:
                 if v:
                     any_field = True
 
-            # пропускаем “разделители” (есть имя, но нет данных)
             if not any_field:
                 continue
 
@@ -598,7 +733,7 @@ def load_storage_db() -> Tuple[int, List[str]]:
                 "sheet_has_pack": sheet_has_pack,
             })
 
-    STORAGE_READY = True
+    STORAGE_READY = len(STORAGE_DB) > 0
     return len(STORAGE_DB), sheet_names
 
 
@@ -629,17 +764,14 @@ def format_storage_row(row: StorageRow) -> str:
     if name:
         lines.append(f"\n<b>{name}</b>")
 
-    # базовые — всегда
     for h in BASE_ALWAYS:
         v = _cell_str(fields.get(h, ""))
         lines.append(f"\n<b>{h}:</b>\n{v if v else '—'}")
 
-    # упаковка — только если колонка есть на листе
     if sheet_has_pack:
         v = _cell_str(fields.get(H_PACK, ""))
         lines.append(f"\n<b>{H_PACK}:</b>\n{v if v else '—'}")
 
-    # доп поля — только если заполнены
     for h in OPTIONAL_IF_FILLED:
         v = _cell_str(fields.get(h, ""))
         if v:
@@ -648,10 +780,10 @@ def format_storage_row(row: StorageRow) -> str:
     return "\n".join(lines).strip()
 
 
-def kb_storage_after_result() -> InlineKeyboardMarkup:
+# ====== КЛАВЫ ДЛЯ СРОКОВ ХРАНЕНИЯ (без Exit и без Reload) ======
+def kb_storage_start() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
     kb.row(InlineKeyboardButton("🔎 Новый поиск", callback_data="storage_newsearch"))
-    kb.row(InlineKeyboardButton("❌ Выйти из поиска", callback_data="storage_exit"))
     kb.row(InlineKeyboardButton("⬅️ В меню", callback_data="nav_main"))
     return kb
 
@@ -664,15 +796,13 @@ def kb_storage_pick_list(results: List[StorageRow]) -> InlineKeyboardMarkup:
             title = title[:40] + "…"
         kb.row(InlineKeyboardButton(f"{i + 1}) {title}", callback_data=f"storage_pick|{i}"))
     kb.row(InlineKeyboardButton("🔎 Новый поиск", callback_data="storage_newsearch"))
-    kb.row(InlineKeyboardButton("❌ Выйти из поиска", callback_data="storage_exit"))
     kb.row(InlineKeyboardButton("⬅️ В меню", callback_data="nav_main"))
     return kb
 
 
-def kb_storage_start() -> InlineKeyboardMarkup:
+def kb_storage_after_result() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
-    kb.row(InlineKeyboardButton("🔄 Перезагрузить базу", callback_data="storage_reload"))
-    kb.row(InlineKeyboardButton("❌ Выйти из поиска", callback_data="storage_exit"))
+    kb.row(InlineKeyboardButton("🔎 Новый поиск", callback_data="storage_newsearch"))
     kb.row(InlineKeyboardButton("⬅️ В меню", callback_data="nav_main"))
     return kb
 
@@ -691,20 +821,75 @@ def clear_storage_mode(user_id: int) -> None:
 
 
 # ================== УТИЛИТА: УБРАТЬ СТАРУЮ REPLY-КЛАВУ ==================
-def remove_old_keyboard(chat_id: int) -> None:
-    bot.send_message(chat_id, "Обновил меню ✅", reply_markup=ReplyKeyboardRemove())
+def remove_old_keyboard(chat_id: int, thread_id: Optional[int] = None) -> None:
+    send_locked(chat_id, "Обновил меню ✅", reply_markup=ReplyKeyboardRemove(), fallback_thread_id=thread_id)
 
 
 # ================== /start /menu ==================
 @bot.message_handler(commands=["start", "menu"])
 def start_cmd(message):
+    # topic-lock filter
+    if not in_allowed_topic_for_message(message):
+        return
+
     clear_user_state(message.from_user.id)
-    remove_old_keyboard(message.chat.id)
-    bot.send_message(
+    remove_old_keyboard(message.chat.id, get_thread_id_from_message(message))
+
+    allowed = get_allowed_thread_id(message.chat.id) if chat_is_group(message.chat) else None
+    if chat_is_group(message.chat) and allowed is None and not is_admin_user(message.from_user):
+        # не спамим в группах: до закрепления темы отвечаем только админу
+        return
+
+    intro = "Главное меню 👇\n" f"<i>Версия: {BOT_VERSION}</i>"
+    if chat_is_group(message.chat) and allowed is None and is_admin_user(message.from_user):
+        intro += (
+            "\n\n⚠️ <b>Тема ещё не закреплена.</b>\n"
+            "Перейди в нужную тему и нажми «📌 Закрепить эту тему» — после этого бот будет жить только там."
+        )
+
+    send_locked(message.chat.id, intro, reply_markup=kb_main_inline(message.from_user), fallback_thread_id=get_thread_id_from_message(message))
+
+
+# ================== КОМАНДЫ ТОЛЬКО ДЛЯ АДМИНА ==================
+@bot.message_handler(commands=["storage_reload"])
+def admin_storage_reload(message):
+    if not is_admin_user(message.from_user):
+        return
+    # разрешаем админу даже если тема не закреплена, но работаем в текущей теме
+    if not in_allowed_topic_for_message(message):
+        return
+    count, sheets = load_storage_db()
+    tid = get_thread_id_from_message(message)
+    if count == 0:
+        send_locked(
+            message.chat.id,
+            "❌ Не нашёл файл базы или база пустая.\n"
+            "Проверь, что xlsx лежит рядом с bot.py или задай STORAGE_FILE.",
+            reply_markup=kb_main_inline(message.from_user),
+            fallback_thread_id=tid
+        )
+        return
+    send_locked(
         message.chat.id,
-        "Главное меню 👇\n"
-        f"<i>Версия: {BOT_VERSION}</i>",
-        reply_markup=kb_main_inline()
+        f"✅ База перезагружена: <b>{count}</b> строк.\n"
+        f"Листы: {', '.join(sheets)}",
+        reply_markup=kb_main_inline(message.from_user),
+        fallback_thread_id=tid
+    )
+
+
+@bot.message_handler(commands=["topic_clear"])
+def admin_topic_clear(message):
+    if not is_admin_user(message.from_user):
+        return
+    if not in_allowed_topic_for_message(message):
+        return
+    clear_allowed_thread_id(message.chat.id)
+    send_locked(
+        message.chat.id,
+        "✅ Привязка к теме сброшена. Теперь снова нужно закрепить тему кнопкой «📌 Закрепить эту тему».",
+        reply_markup=kb_main_inline(message.from_user),
+        fallback_thread_id=get_thread_id_from_message(message)
     )
 
 
@@ -714,13 +899,16 @@ def start_cmd(message):
     "➕ Добавить напоминание", "📋 Все напоминания", "⬅️ Назад"
 })
 def legacy_buttons_handler(message):
+    if not in_allowed_topic_for_message(message):
+        return
     clear_user_state(message.from_user.id)
-    remove_old_keyboard(message.chat.id)
-    bot.send_message(message.chat.id, "Перешли на новое меню (inline) 👇", reply_markup=kb_main_inline())
+    remove_old_keyboard(message.chat.id, get_thread_id_from_message(message))
+    send_locked(message.chat.id, "Перешли на новое меню (inline) 👇", reply_markup=kb_main_inline(message.from_user),
+                fallback_thread_id=get_thread_id_from_message(message))
 
 
-# ================== NAV CALLBACKS ==================
-@bot.callback_query_handler(func=lambda call: call.data.startswith("nav_"))
+# ================== NAV + ADMIN CALLBACKS ==================
+@bot.callback_query_handler(func=lambda call: call.data.startswith(("nav_", "admin_")))
 def nav_callbacks(call):
     chat_id = call.message.chat.id
     user_id = call.from_user.id
@@ -731,73 +919,145 @@ def nav_callbacks(call):
     except Exception:
         pass
 
+    # topic-lock filter
+    if not in_allowed_topic_for_call(call):
+        return
+
+    if data == "admin_pin_topic":
+        if not is_admin_user(call.from_user):
+            return
+        if not chat_is_group(call.message.chat):
+            send_locked(chat_id, "Эта кнопка нужна только в группах с темами.", reply_markup=kb_main_inline(call.from_user))
+            return
+
+        tid = get_thread_id_from_call(call)
+        if tid is None:
+            send_locked(
+                chat_id,
+                "⚠️ Я не вижу ID темы.\n"
+                "Открой <b>нужную тему</b> (Forum Topic) и нажми «📌 Закрепить эту тему» там.",
+                reply_markup=kb_main_inline(call.from_user)
+            )
+            return
+
+        set_allowed_thread_id(chat_id, tid)
+        clear_user_state(user_id)
+        send_locked(
+            chat_id,
+            f"✅ Готово! Закрепил эту тему.\n\n"
+            f"Теперь я буду отвечать <b>только здесь</b> и игнорировать другие темы.\n"
+            f"<i>thread_id={tid}</i>",
+            reply_markup=kb_main_inline(call.from_user),
+            fallback_thread_id=tid
+        )
+        return
+
+    if data == "admin_stop_bot":
+        if not is_admin_user(call.from_user):
+            return
+        clear_user_state(user_id)
+        send_locked(chat_id, "🛑 Останавливаю бота…", reply_markup=None, fallback_thread_id=get_thread_id_from_call(call))
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception:
+            pass
+        # Жестко завершаем процесс — на хостинге он обычно перезапустится супервизором, если настроено.
+        os._exit(0)
+
     if data == "nav_main":
         clear_user_state(user_id)
         try:
-            bot.edit_message_text("Главное меню 👇", chat_id, call.message.message_id, reply_markup=kb_main_inline())
+            bot.edit_message_text("Главное меню 👇", chat_id, call.message.message_id, reply_markup=kb_main_inline(call.from_user))
         except Exception:
-            bot.send_message(chat_id, "Главное меню 👇", reply_markup=kb_main_inline())
+            send_locked(chat_id, "Главное меню 👇", reply_markup=kb_main_inline(call.from_user), fallback_thread_id=get_thread_id_from_call(call))
         return
 
     if data == "nav_reminders":
         clear_user_state(user_id)
         try:
-            bot.edit_message_text("📌 <b>Напоминания</b> — выбери действие:", chat_id, call.message.message_id, reply_markup=kb_reminders_inline())
+            bot.edit_message_text("📌 <b>Напоминания</b> — выбери действие:", chat_id, call.message.message_id,
+                                  reply_markup=kb_reminders_inline(call.from_user))
         except Exception:
-            bot.send_message(chat_id, "📌 <b>Напоминания</b> — выбери действие:", reply_markup=kb_reminders_inline())
+            send_locked(chat_id, "📌 <b>Напоминания</b> — выбери действие:", reply_markup=kb_reminders_inline(call.from_user),
+                        fallback_thread_id=get_thread_id_from_call(call))
         return
 
     if data == "nav_useful":
         clear_user_state(user_id)
         try:
-            bot.edit_message_text("📚 <b>Полезная информация</b> — выбери пункт:", chat_id, call.message.message_id, reply_markup=kb_useful_inline())
+            bot.edit_message_text("📚 <b>Полезная информация</b> — выбери пункт:", chat_id, call.message.message_id,
+                                  reply_markup=kb_useful_inline())
         except Exception:
-            bot.send_message(chat_id, "📚 <b>Полезная информация</b> — выбери пункт:", reply_markup=kb_useful_inline())
+            send_locked(chat_id, "📚 <b>Полезная информация</b> — выбери пункт:", reply_markup=kb_useful_inline(),
+                        fallback_thread_id=get_thread_id_from_call(call))
         return
 
     if data == "nav_storage":
+        # если тема закреплена — вход разрешен только из неё (фильтр выше уже отработал)
+        # если не закреплена — разрешаем вход только админу, и только из темы (tid != None)
+        if chat_is_group(call.message.chat) and get_allowed_thread_id(chat_id) is None and not is_admin_user(call.from_user):
+            return
+
+        tid = get_thread_id_from_call(call)
+
+        if chat_is_group(call.message.chat) and get_allowed_thread_id(chat_id) is None:
+            # админ ещё не закрепил тему
+            if tid is None:
+                send_locked(chat_id, "Открой тему и нажми «📌 Закрепить эту тему» — потом заходи в поиск.",
+                            reply_markup=kb_main_inline(call.from_user))
+                return
+
         if not STORAGE_READY:
-            bot.send_message(
+            send_locked(
                 chat_id,
                 "🧊 <b>Сроки хранения</b>\n\n"
-                "База не загружена. Проверь файл рядом с bot.py или задай STORAGE_FILE.",
-                reply_markup=kb_storage_start()
+                "База не загружена или пустая.\n"
+                "Проверь файл рядом с bot.py или попроси админа выполнить /storage_reload",
+                reply_markup=kb_storage_start(),
+                fallback_thread_id=tid
             )
             return
 
-        states[user_id] = {"mode": "storage_search", "chat_id": chat_id}
-        bot.send_message(
+        states[user_id] = {"mode": "storage_search", "chat_id": chat_id, "thread_id": tid}
+        send_locked(
             chat_id,
             "🧊 <b>Сроки хранения — поиск</b>\n\n"
             "Введи название продукта (можно часть слова).\n"
-            "Пример: <i>омлет</i>, <i>песто</i>, <i>суп</i>\n\n"
-            "Чтобы выйти — нажми «❌ Выйти из поиска».",
-            reply_markup=kb_storage_start()
+            "Пример: <i>омлет</i>, <i>песто</i>, <i>суп</i>",
+            reply_markup=kb_storage_start(),
+            fallback_thread_id=tid
         )
         return
 
     if data == "nav_about":
         clear_user_state(user_id)
+        allowed = get_allowed_thread_id(chat_id)
         text = (
             "ℹ️ <b>О боте</b>\n\n"
             "• Напоминания: добавление и список\n"
             "• Полезная информация: ссылки/материалы\n"
-            "• Сроки хранения: поиск по Excel базе\n\n"
+            "• Сроки хранения: поиск по Excel базе\n"
+            "• Режим темы: бот живёт только в одной теме (после закрепления)\n\n"
             f"🕒 Таймзона: <b>{TZ_NAME}</b>\n"
             f"🧹 Автоудаление напоминаний: <b>{AUTO_DELETE_AFTER_HOURS} ч</b> после события\n"
             f"🧊 База сроков хранения: <b>{'загружена' if STORAGE_READY else 'не загружена'}</b>\n"
+            f"📌 Закреплённая тема: <b>{allowed if allowed is not None else 'не задана'}</b>\n"
             f"🔖 Версия: <b>{BOT_VERSION}</b>"
         )
         try:
-            bot.edit_message_text(text, chat_id, call.message.message_id, reply_markup=kb_main_inline())
+            bot.edit_message_text(text, chat_id, call.message.message_id, reply_markup=kb_main_inline(call.from_user))
         except Exception:
-            bot.send_message(chat_id, text, reply_markup=kb_main_inline())
+            send_locked(chat_id, text, reply_markup=kb_main_inline(call.from_user), fallback_thread_id=get_thread_id_from_call(call))
         return
 
 
 # ================== CALLBACKS (полезная информация) ==================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("ui_"))
 def callbacks_useful(call):
+    # topic-lock filter
+    if not in_allowed_topic_for_call(call):
+        return
+
     chat_id = call.message.chat.id
     data = call.data
 
@@ -807,7 +1067,8 @@ def callbacks_useful(call):
         pass
 
     if data == "ui_groups":
-        bot.send_message(chat_id, GROUPS_TEXT, disable_web_page_preview=True, reply_markup=kb_useful_inline())
+        send_locked(chat_id, GROUPS_TEXT, disable_web_page_preview=True, reply_markup=kb_useful_inline(),
+                    fallback_thread_id=get_thread_id_from_call(call))
         return
 
     if data == "ui_protocol":
@@ -819,13 +1080,17 @@ def callbacks_useful(call):
                 reply_markup=kb_protocol_inline()
             )
         except Exception:
-            bot.send_message(chat_id, "📝 <b>Протокол собрания</b>\nВыбери раздел 👇", reply_markup=kb_protocol_inline())
+            send_locked(chat_id, "📝 <b>Протокол собрания</b>\nВыбери раздел 👇", reply_markup=kb_protocol_inline(),
+                        fallback_thread_id=get_thread_id_from_call(call))
         return
 
 
 # ================== REMINDERS MENU CALLBACKS ==================
 @bot.callback_query_handler(func=lambda call: call.data in {"rem_add", "rem_list"})
 def reminders_menu_callbacks(call):
+    if not in_allowed_topic_for_call(call):
+        return
+
     chat_id = call.message.chat.id
     user_id = call.from_user.id
     data = call.data
@@ -837,21 +1102,28 @@ def reminders_menu_callbacks(call):
 
     if data == "rem_add":
         clear_user_state(user_id)
-        states[user_id] = {"step": "title", "chat_id": chat_id}
-        bot.send_message(chat_id, "Ок! Введи <b>название</b> напоминания:", reply_markup=kb_cancel_inline())
+        states[user_id] = {
+            "step": "title",
+            "chat_id": chat_id,
+            "thread_id": get_thread_id_from_call(call)
+        }
+        send_locked(chat_id, "Ок! Введи <b>название</b> напоминания:", reply_markup=kb_cancel_inline(),
+                    fallback_thread_id=get_thread_id_from_call(call))
         return
 
     if data == "rem_list":
         items = get_chat_reminders(chat_id)
         if not items:
-            bot.send_message(chat_id, "Пока нет напоминаний в этом чате.", reply_markup=kb_reminders_inline())
+            send_locked(chat_id, "Пока нет напоминаний в этом чате.", reply_markup=kb_reminders_inline(call.from_user),
+                        fallback_thread_id=get_thread_id_from_call(call))
             return
 
         lines = ["📋 <b>Напоминания в этом чате</b>:"]
         for i, r in enumerate(items, 1):
             lines.append(f"{i}. <b>{r['title']}</b> — {format_event_dt(r['event_dt'])}")
         lines.append(f"\n🧹 Автоудаление: через {AUTO_DELETE_AFTER_HOURS} ч после события.")
-        bot.send_message(chat_id, "\n".join(lines), reply_markup=kb_reminders_inline())
+        send_locked(chat_id, "\n".join(lines), reply_markup=kb_reminders_inline(call.from_user),
+                    fallback_thread_id=get_thread_id_from_call(call))
         return
 
 
@@ -864,6 +1136,9 @@ def reminders_menu_callbacks(call):
     )
 )
 def callbacks_reminders(call):
+    if not in_allowed_topic_for_call(call):
+        return
+
     user_id = call.from_user.id
     chat_id = call.message.chat.id
     st = states.get(user_id)
@@ -876,7 +1151,8 @@ def callbacks_reminders(call):
 
     if data == "cancel":
         clear_user_state(user_id)
-        bot.send_message(chat_id, "Ок, отменил. Возвращаюсь в меню:", reply_markup=kb_reminders_inline())
+        send_locked(chat_id, "Ок, отменил. Возвращаюсь в меню:", reply_markup=kb_reminders_inline(call.from_user),
+                    fallback_thread_id=get_thread_id_from_call(call))
         return
 
     if not st or int(st.get("chat_id")) != int(chat_id):
@@ -886,21 +1162,29 @@ def callbacks_reminders(call):
         date_iso = data.split("|", 1)[1]
         st["date"] = date_iso
         st["step"] = "time_pick"
-        bot.edit_message_text(
-            "Дата выбрана ✅\nТеперь выбери <b>время</b>:",
-            chat_id,
-            call.message.message_id,
-            reply_markup=build_time_picker()
-        )
+        try:
+            bot.edit_message_text(
+                "Дата выбрана ✅\nТеперь выбери <b>время</b>:",
+                chat_id,
+                call.message.message_id,
+                reply_markup=build_time_picker()
+            )
+        except Exception:
+            send_locked(chat_id, "Дата выбрана ✅\nТеперь выбери <b>время</b>:", reply_markup=build_time_picker(),
+                        fallback_thread_id=get_thread_id_from_call(call))
         return
 
     if data == "date_manual":
         st["step"] = "date_manual"
-        bot.edit_message_text(
-            "Введи дату вручную: <b>31.12.2026</b> или <b>2026-12-31</b>",
-            chat_id,
-            call.message.message_id
-        )
+        try:
+            bot.edit_message_text(
+                "Введи дату вручную: <b>31.12.2026</b> или <b>2026-12-31</b>",
+                chat_id,
+                call.message.message_id
+            )
+        except Exception:
+            send_locked(chat_id, "Введи дату вручную: <b>31.12.2026</b> или <b>2026-12-31</b>",
+                        fallback_thread_id=get_thread_id_from_call(call))
         return
 
     if data.startswith("time|"):
@@ -914,17 +1198,24 @@ def callbacks_reminders(call):
 
     if data == "time_manual":
         st["step"] = "time_manual"
-        bot.edit_message_text(
-            "Введи время вручную в формате <b>HH:MM</b> (например, <b>18:30</b>):",
-            chat_id,
-            call.message.message_id
-        )
+        try:
+            bot.edit_message_text(
+                "Введи время вручную в формате <b>HH:MM</b> (например, <b>18:30</b>):",
+                chat_id,
+                call.message.message_id
+            )
+        except Exception:
+            send_locked(chat_id, "Введи время вручную в формате <b>HH:MM</b> (например, <b>18:30</b>):",
+                        fallback_thread_id=get_thread_id_from_call(call))
         return
 
 
 # ================== CALLBACKS (сроки хранения) ==================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("storage_"))
 def callbacks_storage(call):
+    if not in_allowed_topic_for_call(call):
+        return
+
     chat_id = call.message.chat.id
     user_id = call.from_user.id
     data = call.data
@@ -934,32 +1225,10 @@ def callbacks_storage(call):
     except Exception:
         pass
 
-    if data == "storage_exit":
-        clear_storage_mode(user_id)
-        bot.send_message(chat_id, "Ок, вышел из поиска ✅", reply_markup=kb_main_inline())
-        return
-
     if data == "storage_newsearch":
-        states[user_id] = {"mode": "storage_search", "chat_id": chat_id}
-        bot.send_message(chat_id, "🔎 Введи название продукта для поиска:", reply_markup=kb_storage_start())
-        return
-
-    if data == "storage_reload":
-        count, sheets = load_storage_db()
-        if count == 0:
-            bot.send_message(
-                chat_id,
-                "❌ Не нашёл файл базы.\n"
-                "Проверь, что xlsx лежит рядом с bot.py или задай STORAGE_FILE.",
-                reply_markup=kb_storage_start()
-            )
-            return
-        bot.send_message(
-            chat_id,
-            f"✅ База перезагружена: <b>{count}</b> строк.\n"
-            f"Листы: {', '.join(sheets)}",
-            reply_markup=kb_storage_start()
-        )
+        states[user_id] = {"mode": "storage_search", "chat_id": chat_id, "thread_id": get_thread_id_from_call(call)}
+        send_locked(chat_id, "🔎 Введи название продукта для поиска:", reply_markup=kb_storage_start(),
+                    fallback_thread_id=get_thread_id_from_call(call))
         return
 
     if data.startswith("storage_pick|"):
@@ -971,11 +1240,13 @@ def callbacks_storage(call):
             idx = -1
 
         if not results or idx < 0 or idx >= len(results):
-            bot.send_message(chat_id, "Не нашёл выбранный результат. Сделай новый поиск.", reply_markup=kb_storage_after_result())
+            send_locked(chat_id, "Не нашёл выбранный результат. Сделай новый поиск.", reply_markup=kb_storage_after_result(),
+                        fallback_thread_id=get_thread_id_from_call(call))
             return
 
         row = results[idx]
-        bot.send_message(chat_id, format_storage_row(row), reply_markup=kb_storage_after_result())
+        send_locked(chat_id, format_storage_row(row), reply_markup=kb_storage_after_result(),
+                    fallback_thread_id=get_thread_id_from_call(call))
         clear_storage_mode(user_id)
         return
 
@@ -983,6 +1254,9 @@ def callbacks_storage(call):
 # ================== ТЕКСТОВЫЙ РОУТЕР (ТОЛЬКО КОГДА ЕСТЬ STATE) ==================
 @bot.message_handler(func=lambda m: states.get(m.from_user.id) is not None, content_types=["text"])
 def text_router(message):
+    if not in_allowed_topic_for_message(message):
+        return
+
     user_id = message.from_user.id
     st = states.get(user_id)
     if not st:
@@ -996,31 +1270,36 @@ def text_router(message):
     if st.get("mode") == "storage_search":
         query = (message.text or "").strip()
         if not query:
-            bot.send_message(message.chat.id, "Введи название продукта текстом.", reply_markup=kb_storage_start())
+            send_locked(message.chat.id, "Введи название продукта текстом.", reply_markup=kb_storage_start(),
+                        fallback_thread_id=get_thread_id_from_message(message))
             return
 
         if not STORAGE_READY:
-            bot.send_message(message.chat.id, "База не загружена.", reply_markup=kb_storage_start())
+            send_locked(message.chat.id, "База не загружена или пустая.", reply_markup=kb_storage_start(),
+                        fallback_thread_id=get_thread_id_from_message(message))
             return
 
         results = storage_search(query, limit=12)
         if not results:
-            bot.send_message(
+            send_locked(
                 message.chat.id,
                 f"Ничего не нашёл по запросу: <b>{query}</b>\n"
                 "Попробуй другое слово или более короткий запрос.",
-                reply_markup=kb_storage_start()
+                reply_markup=kb_storage_start(),
+                fallback_thread_id=get_thread_id_from_message(message)
             )
             return
 
         st["storage_results"] = results
 
         if len(results) == 1:
-            bot.send_message(message.chat.id, format_storage_row(results[0]), reply_markup=kb_storage_after_result())
+            send_locked(message.chat.id, format_storage_row(results[0]), reply_markup=kb_storage_after_result(),
+                        fallback_thread_id=get_thread_id_from_message(message))
             clear_storage_mode(user_id)
             return
 
-        bot.send_message(message.chat.id, f"Нашёл вариантов: <b>{len(results)}</b>\nВыбери нужный:", reply_markup=kb_storage_pick_list(results))
+        send_locked(message.chat.id, f"Нашёл вариантов: <b>{len(results)}</b>\nВыбери нужный:", reply_markup=kb_storage_pick_list(results),
+                    fallback_thread_id=get_thread_id_from_message(message))
         return
 
     # ====== сценарий напоминаний ======
@@ -1029,12 +1308,14 @@ def text_router(message):
     if step == "title":
         title = (message.text or "").strip()
         if not title:
-            bot.send_message(message.chat.id, "Название не может быть пустым. Введи ещё раз:", reply_markup=kb_cancel_inline())
+            send_locked(message.chat.id, "Название не может быть пустым. Введи ещё раз:", reply_markup=kb_cancel_inline(),
+                        fallback_thread_id=get_thread_id_from_message(message))
             return
 
         st["title"] = title
         st["step"] = "date_pick"
-        bot.send_message(message.chat.id, "Выбери <b>дату</b>:", reply_markup=build_date_picker())
+        send_locked(message.chat.id, "Выбери <b>дату</b>:", reply_markup=build_date_picker(),
+                    fallback_thread_id=get_thread_id_from_message(message))
         return
 
     if step == "date_manual":
@@ -1049,18 +1330,21 @@ def text_router(message):
                 pass
 
         if not date_iso:
-            bot.send_message(message.chat.id, "Не понял дату. Пример: <b>31.12.2026</b> или <b>2026-12-31</b>")
+            send_locked(message.chat.id, "Не понял дату. Пример: <b>31.12.2026</b> или <b>2026-12-31</b>",
+                        fallback_thread_id=get_thread_id_from_message(message))
             return
 
         st["date"] = date_iso
         st["step"] = "time_pick"
-        bot.send_message(message.chat.id, "Теперь выбери <b>время</b>:", reply_markup=build_time_picker())
+        send_locked(message.chat.id, "Теперь выбери <b>время</b>:", reply_markup=build_time_picker(),
+                    fallback_thread_id=get_thread_id_from_message(message))
         return
 
     if step == "time_manual":
         raw = (message.text or "").strip()
         if not validate_time_hhmm(raw):
-            bot.send_message(message.chat.id, "Не понял время. Пример: <b>18:30</b> (формат HH:MM)")
+            send_locked(message.chat.id, "Не понял время. Пример: <b>18:30</b> (формат HH:MM)",
+                        fallback_thread_id=get_thread_id_from_message(message))
             return
 
         finalize_reminder(user_id, message.chat.id, raw)
@@ -1079,10 +1363,21 @@ def finalize_reminder(user_id: int, chat_id: int, time_hhmm: str) -> None:
     event_dt = TZ.localize(event_dt_naive)
 
     if event_dt <= now_tz():
-        bot.send_message(chat_id, "Это время уже в прошлом. Давай выберем заново дату/время.")
+        send_locked(chat_id, "Это время уже в прошлом. Давай выберем заново дату/время.",
+                    fallback_thread_id=st.get("thread_id"))
         st["step"] = "date_pick"
-        bot.send_message(chat_id, "Выбери <b>дату</b>:", reply_markup=build_date_picker())
+        send_locked(chat_id, "Выбери <b>дату</b>:", reply_markup=build_date_picker(),
+                    fallback_thread_id=st.get("thread_id"))
         return
+
+    # Для групп с закреплённой темой — всегда пишем туда.
+    # Для групп без закрепления — используем тему, где создавали (если есть).
+    thread_id = None
+    allowed = get_allowed_thread_id(chat_id)
+    if allowed is not None:
+        thread_id = allowed
+    else:
+        thread_id = st.get("thread_id")
 
     rem = {
         "id": uuid.uuid4().hex,
@@ -1091,12 +1386,13 @@ def finalize_reminder(user_id: int, chat_id: int, time_hhmm: str) -> None:
         "title": title,
         "event_dt": dt_to_iso(event_dt),
         "created_at": dt_to_iso(now_tz()),
+        "thread_id": int(thread_id) if thread_id is not None else None
     }
 
     add_reminder_to_store(rem)
     schedule_reminder_jobs(rem)
 
-    bot.send_message(
+    send_locked(
         chat_id,
         "✅ Напоминание добавлено!\n"
         f"<b>{title}</b>\n"
@@ -1104,13 +1400,14 @@ def finalize_reminder(user_id: int, chat_id: int, time_hhmm: str) -> None:
         "Я напомню <b>за 24 часа</b> и <b>за 1 час</b> до события.\n"
         f"🧹 Автоудаление: через <b>{AUTO_DELETE_AFTER_HOURS} ч</b> после события.\n\n"
         "Дальше что делаем?",
-        reply_markup=kb_reminders_inline()
+        reply_markup=kb_reminders_inline(),
+        fallback_thread_id=thread_id
     )
 
     clear_user_state(user_id)
 
 
-# ======= загрузка базы при старте (после объявления функций) =======
+# ======= загрузка базы при старте =======
 _count, _sheets = load_storage_db()
 
 
